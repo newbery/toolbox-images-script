@@ -2,9 +2,8 @@
 toolbox.py
 ----------
 
-A utility script to move images from posts on a forum hosted with the Website Toolbox service.
-
-Website Toolbox: https://www.websitetoolbox.com
+A utility script to move images from posts on a forum hosted with the Website Toolbox service
+(https://www.websitetoolbox.com)
 
 This is a simple one-trick pony. It's only meant to help with a very specific
 case where a forum is hitting the server space limits. This script handles this
@@ -49,8 +48,8 @@ Quick Start
 
 ```bash
 # (1) Clone this repository
-git clone ...
-cd something
+git clone https://github.com/newbery/toolbox-images-script.git
+cd toolbox-images-script
 
 # (2) Install the virtualenv (with script dependencies)
 poetry install
@@ -87,7 +86,7 @@ listing. If you don't see any dot files, just google how to make these
 hidden files visible in your system.
 
 Both files are reasonably documented and mostly self-explanatory but the
-authenication settings in `.env.secrets` may need a little explanation.
+authentication settings in `.env.secrets` may need a little explanation.
 
 The `API_KEY` is found in the forum Admin UI under `Integrate > API`.
 
