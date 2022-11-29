@@ -1,0 +1,12 @@
+
+/.venv
+/csv
+/images
+/output
+
+.envrc
+.env.secrets
+poetry.lock
+
+# Don't ignore the template file
+!.env.secrets.template

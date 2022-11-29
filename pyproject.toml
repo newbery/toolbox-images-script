@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "toolbox-images-script"
+version = "0.1.0"
+description = "A utility to relocate images from a Website Toolbox forum"
+authors = ["Ricardo Newbery <ric@digitalmarbles.com>"]
+license = "MIT"
+readme = "README.md"
+
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.28.1"
+alive-progress = "^2.4.1"
+python-dotenv = "^0.21.0"
+beautifulsoup4 = "^4.11.1"
+requests-file = "^1.5.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
