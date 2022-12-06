@@ -17,7 +17,7 @@ from functools import partial
 from itertools import chain, islice
 from pathlib import Path
 from typing import Iterator
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import requests
 from alive_progress import alive_bar, config_handler
@@ -151,7 +151,6 @@ def posts_from_export(args: Namespace) -> dict:
     export, collecting a list of image urls in the message text for any images
     hosted by the Toolbox server.
     """
-    test_post_id = args.config.test_post_id
     prefix = args.config.old_url
     posts_input_path = args.path.content_export_dir / "posts.csv"
     posts_output_path = args.path.posts_from_export
@@ -169,9 +168,6 @@ def posts_from_export(args: Namespace) -> dict:
 
             for row in read_csv(posts_input_path):
                 pid = row["pid"]
-                if test_post_id and pid != test_post_id:
-                    bar()
-                    continue
                 date = row["date"]
                 message = row["message"]
                 image_urls = {
@@ -184,7 +180,7 @@ def posts_from_export(args: Namespace) -> dict:
                 posts_output.writerow([pid, date, image_urls, message])
                 bar()
     
-    print(f"From 'posts.csv' export, processed {len(posts)} posts and found {found} with image links")
+    print(f"From export: Processed {len(posts)} posts; Found {found} with image links")
     return posts
 
 
@@ -196,7 +192,6 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
     previously processed (via the content export processing), we can skip the rest.
     """
     test_run = args.test_run
-    test_post_id = args.config.test_post_id
     prefix = args.config.old_url
     posts_output_path = args.path.posts_from_api
 
@@ -215,17 +210,13 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
             for page in api_requests:
                 page_count += 1
                 for row in page["data"]:
-                    pid = row["postId"]
+                    pid = str(row["postId"])
                     if pid in posts:
                         # this is processed already so exit early
                         bar()
                         api_requests.close()
-                        # just in case, let's also throw an error.
-                        # We should not reach this line.
-                        raise Exception
-                    count += 1
-                    if test_post_id and pid != test_post_id:
                         continue
+                    count += 1
                     date = row["postTimestamp"]
                     message = row["message"]
                     image_urls = {
@@ -241,7 +232,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
                 if test_run and page_count > 3:
                     break
 
-    print(f"From 'List Posts' api, processed {count} posts and found {found} with image links")
+    print(f"From api: Processed {count} posts; Found {found} with image links")
     return posts
 
 
@@ -254,6 +245,7 @@ def images_from_posts(args: Namespace, posts: dict) -> dict:
     better postponed.
     """
     test_run = args.test_run
+    test_post_id = args.config.test_post_id
     utc = timezone.utc
     last_date = datetime.now(utc) - timedelta(days=int(args.config.skip_days))
     prefix = args.config.old_url
@@ -261,67 +253,85 @@ def images_from_posts(args: Namespace, posts: dict) -> dict:
     img_dir = args.path.image_download_dir
     session = requests.Session()
     
+    def download_image(url, path):
+        if path.exists():
+            size = path.stat().st_size
+        else:
+            resp = session.get(url, stream=True)
+            if resp.status_code == 200:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("wb") as f:
+                    for chunk in resp.iter_content(1024):
+                        f.write(chunk)
+                size = int(resp.headers['content-length'])
+            else:
+                size = 0
+        return size
+
     skipped = 0
     downloaded = 0
     errors = set()
 
-    # Generate map of images to posts and set of recent images
+    # Generate map of images to posts and set of images_to_exclude
     images = defaultdict(lambda: {"result": None, "pids": set(), "thumb": ""})
-    recent_images = set()
+    images_to_exclude = set()
     for pid, post in posts.items():
         urls = post["image_urls"]
+        if test_post_id and test_post_id != pid:
+            images_to_exclude.update(urls)
         if datetime.fromtimestamp(int(post["date"]), utc) > last_date:
-            recent_images.update(urls)
+            images_to_exclude.update(urls)
         for url in urls:
             images[url]["pids"].add(pid)
-            if not images[url]["thumb"]:
-                images[url]["thumb"] = url.replace(prefix, prefix_thumb)
+            images[url]["thumb"] = url.replace(prefix, prefix_thumb)
 
     # Download images, skipping recent images and problem downloads
     size = 0
-    count = 22 if test_run else 2 * len(images)
+    count = 2 * (len(images) - len(images_to_exclude))
     with alive_bar(count, title="Downloads") as bar:
 
         for url, image in images.items():
-            if url in recent_images:
-                skipped += 1
+            if url in images_to_exclude:
+                skipped += 2
                 image["result"] = Image.skipped
-                bar()
                 continue
+
             thumb = image["thumb"]
             path = unquote(url[len(prefix):])
             path_full = img_dir / path
             path_thumb = img_dir / "thumb" / path
-            if path_full.exists() and path_thumb.exists():
-                downloaded += 2
-                size += path_full.stat().st_size + path_thumb.stat().st_size
+                
+            # Full image
+            _size = download_image(url, path_full)
+            if _size:
+                size += _size
+                downloaded += 1
                 image["result"] = Image.downloaded
             else:
-                for _url, _path in ((url, path_full), (thumb, path_thumb)):
-                    resp = session.get(_url, stream=True)
-                    if resp.status_code == 200:
-                        downloaded += 1
-                        size += int(resp.headers['content-length'])
-                        _path.parent.mkdir(parents=True, exist_ok=True)
-                        with _path.open("wb") as f:
-                            for chunk in resp.iter_content(1024):
-                                f.write(chunk)
-                        if image["result"] != Image.error:
-                            image["result"] = Image.downloaded
-                    else:
-                        errors.add(_url)
-                        image["result"] = Image.error
-            bar()
+                errors.add(url)
+                image["result"] = Image.error
+            
+            # Thumb image
+            # We don't need to report thumb errors
+            # since thumbs are only used in attachments
+            # and older posts may not have thumbs.
+            _size = download_image(thumb, path_thumb)
+            if _size:
+                size += _size
+                downloaded += 1
+           
+            bar(2)
 
             if test_run and downloaded > 22:
                 skipped = 2 * len(images) - len(errors) - downloaded
                 break
 
-    print(f"Skipped {skipped} images and downloaded {downloaded} ({friendly_size(size)})")
     if errors:
-        print(f"! Download errors (probably old deleted images):")
-        for url in errors:
-            print(" ", url)
+        print(f"Downloads: ! Errors (probably old deleted images):")
+        for url in sorted(errors):
+            print(f" {images[url]['pids']} {url}")
+
+    print(f"Skipped {skipped} images and downloaded {downloaded} ({friendly_size(size)})")
 
     return images
 
@@ -343,7 +353,7 @@ def output_download_results(args: Namespace, images: dict) -> None:
     pids_to_remove = set()
     for image in images.values():
         if image["result"] is Image.downloaded:
-            downloaded += 1
+            downloaded += 2
             pids.update(image["pids"])
         else:
             pids_to_remove.update(image["pids"])
@@ -380,7 +390,7 @@ def output_download_results(args: Namespace, images: dict) -> None:
                 images_output.writerow([url, _result, _pids])
                 bar()
     
-    print(f"Summary: Ready to upload {downloaded} images and update {len(pids)} posts")
+    print(f"Summarize: {downloaded} images and {len(pids)} posts to update")
     
 
 def check_authentication_settings(args: Namespace) -> bool:
@@ -414,38 +424,41 @@ def check_new_image_urls(args: Namespace) -> bool:
     new_prefix = args.config.new_url
     posts_path = args.path.posts
     session = requests.Session()
-     
-    # If new_base is a local path then generate a local 'file://' url.
-    # This only works in TEST_RUN since real post updates need proper urls.
+    stop_fast = True  # Make this an environment setting?
+
+    # If new_url is a local path then generate a local 'file://' url.
+    # This only works in TEST_RUN since real post updates need public urls.
     if test_run and not new_prefix.lower().startswith(("https://", "http://")):
         new_prefix = f"file://{str(Path(new_prefix).resolve())}/"
         session.mount('file://', FileAdapter())
 
-    # Confirm all images are accessible at new location
+    new_url_func = get_new_url_func(old_prefix, new_prefix)
+
+    # Confirm all full images are accessible at new location.
+    # We don't check thumbs here since they don't always exist.
     images_errors = set()
     count = linecount(posts_path) - 1
     with alive_bar(count, title="Check images") as bar:
         for row in read_csv(posts_path):
             for old_url in literal_eval(row["image_urls"]):
-                new_url = old_url.replace(old_prefix, new_prefix)
-                new_url_thumb = old_url.replace(old_prefix, new_prefix + "thumb/")
+                new_url = new_url_func(old_url)
+                if session.get(new_url).status_code != 200:
+                    images_errors.add(new_url)
+                    if stop_fast:
+                        raise Exception("Image not found:", new_url)
 
-                # TODO: do these requests asynchronously for speed
-                if session.get(new_url_thumb).status_code != 200:
-                    # if thumb is broke, assume full image is also broke
-                    images_errors.add(new_url)
-                    images_errors.add(new_url_thumb)
-                elif session.get(new_url).status_code != 200:
-                    images_errors.add(new_url)
+                # The proxy we're using throttles at 2500 req per 10 min.
+                # Make this an environment setting?
+                time.sleep(.25)
 
             bar()
 
     if images_errors:
-        print("! Errors attempting to access the following images:")
+        print("Check images: ! Errors attempting to access the following images:")
         for url in images_errors:
             print(" ", url)
     else:
-        print("Check passed: All images are accessible at new urls")
+        print("Check images: Passed; All images are accessible at new urls")
 
     return not images_errors
 
@@ -459,11 +472,12 @@ def update_posts(args: Namespace) -> None:
     update_posts = f"{api_url}/api/posts/"
     headers = {
         "Accept": "application/json",
-        "x-api-key": args.config.apy_key,
+        "x-api-key": args.config.api_key,
         "x-api-username": args.config.api_username
     }
 
     request = requestor(args, "post")
+    new_url_func = get_new_url_func(old_prefix, new_prefix)
 
     images_to_delete = set()  # images ready to be deleted from Toolbox
     images_to_keep = set()    # images not ready to be deleted
@@ -477,11 +491,11 @@ def update_posts(args: Namespace) -> None:
             image_urls = literal_eval(row["image_urls"])
             new_message = row["message"]
             for old_url in image_urls:
-                new_url = old_url.replace(old_prefix, new_prefix)
+                new_url = new_url_func(old_url)
                 new_message = new_message.replace(old_url, new_url)
             url = update_posts + pid
-            data = {"message": new_message}
-            resp = request(url, data=data, headers=headers)
+            body = {"content": new_message}  # why is 'message' named 'content' here?
+            resp = request(url, json=body, headers=headers)
             if resp.status_code == 200:
                 images_to_delete.update(image_urls)
                 posts_updated += 1
@@ -498,7 +512,7 @@ def update_posts(args: Namespace) -> None:
         print("! Errors attempting to update the following posts:")
         for pid in posts_errors:
             print(" ", pid)
-    print(f"Updated {posts_updated} posts")
+    print(f"Update posts: {posts_updated} updated")
     
     return images_to_delete
 
@@ -539,7 +553,31 @@ def delete_images(args: Namespace, images: set) -> None:
 
             bar(length - half)
     
-    print(f"Deleted {count} images")
+    print(f"Delete images: {count} deleted")
+
+
+def get_new_url_func(old_prefix: str, new_prefix: str):
+    """Return 'new_url_func' function with the appropriate 'fixpath' change to the
+    path for the case where the old url or new url contains a parameter string.
+    In this case, the parameter string may need to be quoted (or unquoted) to
+    escape special characters (or unescape) that aren't expected in a parameter.
+    """
+
+    fixpath = None
+    if "?" in old_prefix + new_prefix:
+        if "?" not in old_prefix:
+            fixpath = quote
+        elif "?" not in new_prefix:
+            fixpath = unquote
+    
+    # fixpath is a no-op when the old and new are both parameters or both not.
+    if not fixpath:
+        fixpath = lambda x: x  # noqa
+
+    def new_url_func(url: str) -> str:
+        return new_prefix + fixpath(url[len(old_prefix):])
+
+    return new_url_func
 
 
 def requestor(args: Namespace, method: str = "get"):
@@ -637,6 +675,7 @@ def rotate_output_archive(args: Namespace):
     five archives.
     """
     output_dir = args.path.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     archive_dir = output_dir.with_name(output_dir.name + ".archive")
     archive_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().isoformat(sep="-").replace(':', "-")
