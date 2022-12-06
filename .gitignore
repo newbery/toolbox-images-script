@@ -1,8 +1,9 @@
 
 /.venv
-/csv
-/images
-/output
+/csv*
+/images*
+/output*
+/_*
 
 .envrc
 .env.secrets
