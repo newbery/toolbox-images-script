@@ -94,7 +94,7 @@ The `API_USERNAME` is any username with "administrator" privileges.
 
 The `ADMIN_COOKIE` is just the browser cookie you get when you navigate to
 the forum Admin UI via "https://your-forum-domain/admin". Just copy this
-cookie using whatever settings page your web browser offers for this purpose.
+cookie from whatever settings page your web browser offers for this purpose.
 
 Technically, we don't need the entire cookie for our purposes but feel free
 to copy the entire string as we will just ignore the unneeded bits. The minimum
