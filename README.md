@@ -140,3 +140,18 @@ The following images and files are NOT managed:
 - event images/files
 - profile picture
 - profile avatar
+
+
+Caveats
+-------
+
+Miscellaneous notes about issues encountered with this script.
+
+- There were a couple of edge cases where images were linked directly to the backend
+url instead of to the Cloudfront CDN. I discovered this late during manual inspection
+of the results. Since this was just a handful of posts, it was easier to fix these
+by manually downloading the images and manually updating the posts. It's probably
+not worth fixing the script to account for these edge cases. If starting a migration
+from scratch, maybe do these corrections first. Search for the offending links
+in the content export csv ("https://s3.amazonaws.com/files.websitetoolbox.com/...)"
+
