@@ -1,6 +1,7 @@
 
 /.venv
 /csv*
+/downloads*
 /images*
 /output*
 /_*
