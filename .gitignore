@@ -1,14 +1,17 @@
 
 /.venv
+/.idea
 /csv*
 /downloads*
 /images*
 /output*
 /_*
 
+.env
 .envrc
 .env.secrets
 poetry.lock
 
 # Don't ignore the template file
+!.env.template
 !.env.secrets.template
