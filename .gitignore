@@ -10,6 +10,7 @@
 .env
 .envrc
 .env.secrets
+.python-version
 poetry.lock
 
 # Don't ignore the template file

@@ -5,10 +5,8 @@ import csv
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
-import unicodedata
 import warnings
 from argparse import Namespace
 from ast import literal_eval
@@ -23,9 +21,9 @@ from urllib.parse import quote, unquote
 
 import requests
 from alive_progress import alive_bar, config_handler
-from dotenv import dotenv_values
 from bs4 import BeautifulSoup, Comment, MarkupResemblesLocatorWarning
-from plumbum.cmd import grep, cut, wc
+from dotenv import dotenv_values
+from plumbum.cmd import cut, grep, wc
 from requests_file import FileAdapter
 
 htmlparser = partial(BeautifulSoup, features="html.parser")
@@ -51,7 +49,7 @@ USAGE = """
 """
 
 
-def main(argv: list = None) -> None:
+def main(argv: list | None = None) -> None:
     """Main command line entrypoint"""
     argv = argv or sys.argv[1:]
     args = parse_args(argv)
@@ -254,12 +252,12 @@ def posts_from_export(args: Namespace, legacy: bool = False) -> dict:
     export, collecting a list of image urls in the message text for any images
     hosted by the Toolbox server.
     """
-    old_url = args.config.old_url
-    old_url_thumb = args.config.old_url_thumb
+    old_url: str = args.config.old_url
+    old_url_thumb: str = args.config.old_url_thumb
     posts_input_path = args.path.export_dir / "posts.csv"
     posts_output_path = args.path.posts_from_export
     
-    prefix = (old_url, old_url_thumb) if old_url_thumb else old_url
+    prefix: str | tuple[str, str] = (old_url, old_url_thumb) if old_url_thumb else old_url
     find_urls = find_legacy_urls if legacy else find_urls_func(prefix)
 
     posts = {}
@@ -322,7 +320,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
                     if pid in posts:
                         # this is processed already so exit early
                         bar()
-                        api_requests.close()
+                        # api_requests.close()
                         break
                     count += 1
                     date = row["postTimestamp"]
@@ -375,13 +373,13 @@ def files_from_posts(args: Namespace, posts: dict) -> dict:
         else:
             try:
                 ts = int(post["date"])
-            except:
+            except Exception:
                 print("Bad date")
                 continue
             if datetime.fromtimestamp(ts, utc) > last_date:
                 files_to_exclude.update(fileids)
 
-        for fileid, url in zip(fileids, urls):
+        for fileid, url in zip(fileids, urls, strict=True):
             if fileid in files:
                 files[fileid]["pids"].add(pid)
                 if not files[fileid]["url_thumb"]:
@@ -419,9 +417,10 @@ def files_from_export(args: Namespace, posts: dict) -> dict:
     # Generate map of files/images to posts
     files = {}
     for pid, post in posts.items():
+        urls = post["image_urls"]
         fileids = [url.replace("=", "/").split("/")[-1] for url in urls]
 
-        for fileid, url in zip(fileids, urls):
+        for fileid, url in zip(fileids, urls, strict=True):
             if fileid in files:
                 files[fileid]["pids"].add(pid)
             else:
@@ -450,7 +449,7 @@ def files_from_export(args: Namespace, posts: dict) -> dict:
     if count != len(files):
         # This should not happen. So stop and figure it out.
         missing = set(files) - seen
-        files_ = {k:v for k,v in files.items() if k in missing}
+        files_ = {k: v for k, v in files.items() if k in missing}  # noqa
         breakpoint()
         raise Exception
 
@@ -524,7 +523,7 @@ def download_files(args: Namespace, files: dict) -> dict:
                 break
 
     if errors:
-        print(f"Downloads: ! Errors (probably old deleted images):")
+        print("Downloads: ! Errors (probably old deleted images):")
         for fileid in sorted(errors):
             print(f" {files[fileid]['pids']} {files[fileid]['url']}")
 
@@ -732,7 +731,7 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
 
     # If old_urls still exist, warn the user
     if not check_old_urls(args, files_to_delete):
-        print(f"! WARNING: At least one old_url or fileid was found in the posts")
+        print("! WARNING: At least one old_url or fileid was found in the posts")
         # raise an exception so it's obvious something is amiss
         raise Exception()
 
@@ -954,7 +953,7 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
     return not images_errors
 
 
-def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) -> None:
+def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) -> bool:
     """Check if any old_urls are still found in updated posts (and in posts
     not updated).
     
@@ -1041,7 +1040,7 @@ def get_new_url_func(old_prefix: str, thumb_prefix: str, new_prefix: str):
     both_match = old_has_param is new_has_param
     
     if both_match:
-        fixpath = lambda x: x
+        fixpath = lambda x: x  # noqa
     elif old_has_param:
         fixpath = unquote
     else:
@@ -1059,33 +1058,47 @@ def get_new_url_func(old_prefix: str, thumb_prefix: str, new_prefix: str):
     return new_url_func
 
 
-def find_urls_func(prefix: str):
+def find_urls_func(prefix: str | tuple[str, str]):
     """Return 'find_urls' function that returns a list of image urls found in a
     string that starts with any of the expected url prefixes.
     
     Later this will be extended to include support for other types of urls.
     """
 
-    def find_urls(text: str) -> list:
-        return {
-            img["src"] for img in htmlparser(text).find_all("img")
-            if img.get("src", "").startswith(prefix)
-        }
+    def find_urls(text: str) -> list[str]:
+        urls: set[str] = set()
+
+        for img in htmlparser(text).find_all("img"):
+            src = img.get("src")
+            if isinstance(src, str) and src.startswith(prefix):
+                urls.add(src)
+
+        return sorted(urls)
 
     return find_urls
 
 
-def find_legacy_urls(text: str) -> list:
+def find_legacy_urls(text: str) -> list[str]:
     """Return legacy urls found in given string"""
     html = htmlparser(text)
-    prefixes = ("/file?id=", "https://s3.amazonaws.com/files.websitetoolbox.com/")
-    urls = {
-        i["src"] for i in html.find_all("img") if i.get("src", "").startswith(prefixes)
-    }
-    urls.update(
-        {a["href"] for a in html.find_all("a") if a.get("href", "").startswith(prefixes)}
+    prefixes: tuple[str, ...] = (
+        "/file?id=",
+        "https://s3.amazonaws.com/files.websitetoolbox.com/",
     )
-    return urls
+
+    urls: set[str] = set()
+
+    for img in html.find_all("img"):
+        src = img.get("src")
+        if isinstance(src, str) and src.startswith(prefixes):
+            urls.add(src)
+
+    for a in html.find_all("a"):
+        href = a.get("href")
+        if isinstance(href, str) and href.startswith(prefixes):
+            urls.add(href)
+
+    return sorted(urls)
 
 
 def remove_bad_url(text: str, bad_url: str) -> str:
@@ -1097,7 +1110,7 @@ def remove_bad_url(text: str, bad_url: str) -> str:
     html = htmlparser(text)
     for img in html.find_all("img"):
         if img.get("src", "") == bad_url:
-            notice = html.new_tag("span", **{"class": "missing-image"})
+            notice = html.new_tag("span", attrs={"class": "missing-image"})
             notice.append("(missing image)")
             link = img.find_parent("a")
             badstuff = link or img
@@ -1119,13 +1132,13 @@ def check_api_auth_settings(args: Namespace) -> bool:
         "x-api-username": args.config.api_username,
     }
     api_params = {"limit": 1}
-    response = requests.get(api_list_posts, params=api_params, headers=api_headers)
+    response = requests.get(api_list_posts, params=api_params, headers=api_headers)  # noqa
     if response.ok:
         return True
     else:
         breakpoint()
+        return False
     
-
 
 def check_admin_auth_settings(args: Namespace) -> bool:
     """Check that the Admin cookie in config is valid. If not, return False."""
@@ -1135,15 +1148,23 @@ def check_admin_auth_settings(args: Namespace) -> bool:
         "User-Agent": useragent,
         "Cookie": args.config.admin_cookie,
     }
-    return requests.get(admin_dashboard, headers=admin_headers).ok
+    return requests.get(admin_dashboard, headers=admin_headers).ok  # noqa
 
 
 def requestor(args: Namespace, method: str = "get", headers: dict | None = None):
     """Just a shim to make it easy to switch to a fake requestor for testing"""
     if args.test_run:
+
         class FakeResponse:
             status_code = 200
             ok = True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+                
         return lambda *a, **b: FakeResponse()
     
     session = requests.Session()
@@ -1154,19 +1175,21 @@ def requestor(args: Namespace, method: str = "get", headers: dict | None = None)
 def friendly_size(size: int) -> str:
     """Return a friendly string representing the byte size with units"""
     unit = "bytes"
+    s = float(size)
     for u in ("kb", "MB", "GB"):
-        if size <= 1024:
+        if s <= 1024:
             break
         unit = u
-        size = size / 1024
-    return f"{int(size)} {unit}"
+        s = s / 1024
+    return f"{int(s)} {unit}"
 
 
 def linecount(path: Path) -> int:
     """A quick way to count lines in a file. Defaults to 0 if file not found."""
-    result = subprocess.run(["wc", "-l", str(path)], capture_output=True)
-    output = "0" if result.returncode else result.stdout
-    return int(output.split()[0])
+    if not path.is_file():
+        return 0
+    out = wc("-l", str(path))
+    return int(out.split()[0])
 
 
 def batched(iterable, n):
@@ -1250,7 +1273,7 @@ def rotate_output_archive(args: Namespace, count: int = 10) -> None:
                 shutil.rmtree(path)
 
 
-def log(args: Namespace, text: str = None) -> None:
+def log(args: Namespace, text: str | None = None) -> None:
     """Write text to log file. Defaults to just logging the current command."""
     now = datetime.now().isoformat(sep=" ")
     txt = text if text else " ".join(sys.argv)
@@ -1271,8 +1294,8 @@ def config() -> Namespace:
     This prefix is stripped and the names then lowercased before being
     merged with the default values collected from .env files.
     """
-    env = {k.lower(): v for k, v in dotenv_values(".env").items()}
-    env_secrets = {k.lower(): v for k, v in dotenv_values(".env.secrets").items()}
+    env: dict[str, str | None] = {k.lower(): v for k, v in dotenv_values(".env").items()}
+    env_secrets: dict[str, str | None] = {k.lower(): v for k, v in dotenv_values(".env.secrets").items()}
 
     prefix = "TOOLBOX_"
     length = len(prefix)

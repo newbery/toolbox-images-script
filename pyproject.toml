@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "toolbox-images-script"
-version = "0.1.0"
+version = "0.2.0"
 description = "A utility to relocate images from a Website Toolbox forum"
 authors = ["Ricardo Newbery <ric@digitalmarbles.com>"]
 license = "MIT"
@@ -8,15 +8,39 @@ readme = "README.md"
 
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.11"
 requests = "^2.28.1"
-alive-progress = "^2.4.1"
-python-dotenv = "^0.21.0"
+alive-progress = "^3.3.0"
+python-dotenv = "^1.2.1"
 beautifulsoup4 = "^4.11.1"
-requests-file = "^1.5.1"
+requests-file = "^3.0.1"
 plumbum = "^1.8.0"
+
+ruff = "*"
+pyright = "*"
+pdbpp = "*"
 
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+preview = true
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "S"]
+ignore = ["E501", "S101"]
+unfixable = ["F401"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportIncompatibleMethodOverride = "warning"
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false
+
