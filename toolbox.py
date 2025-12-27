@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 import warnings
 from argparse import Namespace
@@ -17,7 +18,7 @@ from functools import partial
 from itertools import chain, islice
 from pathlib import Path
 from typing import Iterator
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 from alive_progress import alive_bar, config_handler
@@ -261,7 +262,7 @@ def posts_from_export(args: Namespace, legacy: bool = False) -> dict:
     find_urls = find_legacy_urls if legacy else find_urls_func(prefix)
 
     posts = {}
-    count = linecount(posts_input_path) - 1
+    count = max(0, linecount(posts_input_path) - 1)
     found = 0
 
     with alive_bar(count, title="From export") as bar:
@@ -311,6 +312,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
             posts_output = csv.writer(f)
             posts_output.writerow(fieldnames)
 
+            stop = False
             page_count = 0
             api_requests = list_posts(args)
             for page in api_requests:
@@ -320,7 +322,8 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
                     if pid in posts:
                         # this is processed already so exit early
                         bar()
-                        # api_requests.close()
+                        stop = True
+                        api_requests.close()
                         break
                     count += 1
                     date = row["postTimestamp"]
@@ -332,7 +335,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
                     posts_output.writerow([pid, date, image_urls, message])
                     bar()
                 
-                if test_run and page_count > 3:
+                if stop or (test_run and page_count > 3):
                     break
 
     print(f"From api: Processed {count} posts; Found {found} with image links")
@@ -362,14 +365,23 @@ def files_from_posts(args: Namespace, posts: dict) -> dict:
     files = {}
     files_to_exclude = set()
     for pid, post in posts.items():
-        urls = post["image_urls"]
-        
-        # For the non-toolbox case, let's reuse the url as a fileid
-        fileids = [url.split("/")[-2] for url in urls] if toolbox else urls
+        urls = post["image_urls"]        
+    
+        fileids: list[str] = []
+        pairs: list[tuple[str, str]] = []
+
+        if toolbox:
+            for url in urls:
+                if fileid := fileid_from_url(url):
+                    fileids.append(fileid)
+                    pairs.append((fileid, url))
+        else:
+            # For the non-toolbox case, let's reuse the url as a fileid
+            fileids = urls[:]
+            pairs = [(url, url) for url in urls]
 
         if test_post_id and test_post_id != pid:
             files_to_exclude.update(fileids)
-        
         else:
             try:
                 ts = int(post["date"])
@@ -379,7 +391,7 @@ def files_from_posts(args: Namespace, posts: dict) -> dict:
             if datetime.fromtimestamp(ts, utc) > last_date:
                 files_to_exclude.update(fileids)
 
-        for fileid, url in zip(fileids, urls, strict=True):
+        for fileid, url in pairs:
             if fileid in files:
                 files[fileid]["pids"].add(pid)
                 if not files[fileid]["url_thumb"]:
@@ -413,14 +425,18 @@ def files_from_export(args: Namespace, posts: dict) -> dict:
     """
     old_url = args.config.old_url
     files_input_path = args.path.export_dir / "attachment.csv"
-
+    
     # Generate map of files/images to posts
     files = {}
     for pid, post in posts.items():
         urls = post["image_urls"]
-        fileids = [url.replace("=", "/").split("/")[-1] for url in urls]
 
-        for fileid, url in zip(fileids, urls, strict=True):
+        pairs: list[tuple[str, str]] = []
+        for url in urls:
+            if fileid := fileid_from_url(url):
+                pairs.append((fileid, url))
+
+        for fileid, url in pairs:
             if fileid in files:
                 files[fileid]["pids"].add(pid)
             else:
@@ -450,7 +466,7 @@ def files_from_export(args: Namespace, posts: dict) -> dict:
         # This should not happen. So stop and figure it out.
         missing = set(files) - seen
         files_ = {k: v for k, v in files.items() if k in missing}  # noqa
-        breakpoint()
+        # breakpoint()
         raise Exception
 
     return files
@@ -472,15 +488,17 @@ def download_files(args: Namespace, files: dict) -> dict:
         elif path_new.exists():
             size = path_new.stat().st_size
         else:
-            resp = session.get(url, stream=True)
-            if resp.status_code == 200:
-                path_new.parent.mkdir(parents=True, exist_ok=True)
-                with path_new.open("wb") as f:
-                    for chunk in resp.iter_content(1024):
-                        f.write(chunk)
-                size = int(resp.headers['content-length'])
-            else:
-                size = 0
+            with session.get(url, stream=True, timeout=60) as resp:
+                if resp.status_code == 200:
+                    path_new.parent.mkdir(parents=True, exist_ok=True)
+                    with path_new.open("wb") as f:
+                        for chunk in resp.iter_content(1024):
+                            f.write(chunk)
+                    # size = int(resp.headers['content-length'])
+                    cl = resp.headers.get("Content-Length")
+                    size = int(cl) if cl is not None else path_new.stat().st_size
+                else:
+                    size = 0
         return size
 
     skipped = 0
@@ -646,7 +664,7 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
     
     posts_updated = 0
     posts_errors = set()
-    count = linecount(posts_path) - 1
+    count = max(0, linecount(posts_path) - 1)
     with alive_bar(count, title="Update posts") as bar:
 
         with updates_output_path.open("w", newline="") as f:
@@ -659,9 +677,6 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
                 image_urls = literal_eval(row["image_urls"])
                 new_message = row["message"]
                 for url in image_urls:
-                    if url == "https://d28lcup14p4e72.cloudfront.net/197085/7976316/IMG_6454.jpgsss":
-                        continue
-
                     file = files[url]
 
                     # Updating legacy link
@@ -761,7 +776,7 @@ def delete_files(args: Namespace) -> None:
     })
 
     # Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)
-    r = session.get(files_page)
+    r = session.get(files_page, timeout=30)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
     form = soup.find("form", {"id": "frmFiles"})
@@ -790,7 +805,7 @@ def delete_files(args: Namespace) -> None:
                 resp = "TEST RUN"
                 resp_ok = True
             else:
-                resp = session.post(delete_endpoint, data=data)
+                resp = session.post(delete_endpoint, data=data, timeout=30)
                 resp_ok = resp.ok
 
             if resp_ok:
@@ -807,84 +822,10 @@ def delete_files(args: Namespace) -> None:
 
     if failed:
         print("File delete failed; last payload had", len(failed["data"]), "fields")
-        breakpoint()
+        # breakpoint()
         raise Exception
 
     print(f"Delete files: {count} deleted")
-
-
-# def delete_files(args: Namespace) -> None:
-#     """Delete Toolbox images given by set of fileids.
-    
-#     There is no API endpoint for deleting files so this instead uses the
-#     Admin UI by simulating the Delete Files form submission.
-    
-#     This of course won't work with files not hosted by Toolbox so it will
-#     throw an error if an attempt to made to do that.
-#     """
-#     test_run = args.test_run
-#     admin_url = args.config.admin_url
-#     deletes_path = args.path.fileids_to_delete
-#     fileids_to_delete = json.loads(deletes_path.read_text())
-    
-#     delete_files = f"{admin_url}/mb/uploading"  # strange name :)
-#     headers = {"Cookie": args.config.admin_cookie}
-#     request = requestor(args, "post")
-#     successes = []
-
-#     failed = {}
-#     count = len(fileids_to_delete)
-#     with alive_bar(count, title="Delete files") as bar:
-#         for fileids in batched(fileids_to_delete, 100):
-#             if not fileids:
-#                 continue
-#             params = {"action": "deleteFiles", "deleteimg": ",".join(fileids)}
-#             resp = request(delete_files, headers=headers, params=params)
-#             if resp.ok:
-#                 successes.extend(fileids)
-#                 print(f"Deleted {len(successes)}")
-#             else:
-#                 failed = {
-#                     "params": params,
-#                     "successes": successes,
-#                     "response": resp,
-#                 }
-#                 break
-#                 # print("File delete failed with the following request params:", params)
-#                 # if successes:
-#                 #     print("These were successfully deleted:")
-#                 #     for fileid in successes:
-#                 #         print(" ", fileid)
-#                 # print("Aborting any more deletes!")
-#                 # print(resp.)
-#                 # raise Exception
-
-#             length = len(fileids)
-#             half = int(length / 2)
-#             bar(half)
-
-#             # Throttle these requests. The rate limit for these requests is not
-#             # advertised so this was determined from trial and error.
-#             if not test_run:
-#                 time.sleep(1.5)
-
-#             bar(length - half)
-            
-#             # break
-    
-#     # breakpoint()
-
-#     if failed:
-#         print("File delete failed with the following request params:", failed["params"])
-#         if failed["successes"]:
-#             print("These were successfully deleted:")
-#             for fileid in failed["successes"]:
-#                 print(" ", fileid)
-#         print("Aborting any more deletes!")
-#         breakpoint()
-#         raise Exception
-
-#     print(f"Delete files: {count} deleted")
 
 
 def check_new_urls(args: Namespace, files: dict) -> bool:
@@ -923,7 +864,7 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
     # for those files that were skipped or failed during download.
     seen = set()
     images_errors = set()
-    count = linecount(posts_path) - 1
+    count = max(0, linecount(posts_path) - 1)
     with alive_bar(count, title="Check new urls") as bar:
         for row in read_csv(posts_path):
             for url in literal_eval(row["image_urls"]):
@@ -933,7 +874,7 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
                     continue
                 seen.add(url)
                 new_url = urldata.get("new_url") or new_url_func(url)
-                with head(new_url) as response:
+                with head(new_url, allow_redirects=True, timeout=30) as response:
                     if response.status_code not in (200, 206):
                         images_errors.add((new_url, url))
                         if stop_fast:
@@ -943,7 +884,8 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
 
     if images_errors:
         if stop_fast:
-            breakpoint()
+            # breakpoint()
+            raise Exception
         print("Check new urls: !!! Errors attempting to access the following images:")
         for url in images_errors:
             print(" ", url)
@@ -951,6 +893,46 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
         print("Check new urls: Passed; All images are accessible at new urls")
 
     return not images_errors
+
+
+def grep_urls_in_file(updates_path: Path, urls: list[str]) -> str:
+    """Given a CSV file `updates_path` and a list of URLs, return the matching
+    post IDs (first CSV field) for rows that contain any of the URLs.
+
+    Equivalent intent to the original:
+        result = (grep["-E", _urls, updates_path] | cut["-d,", "-f1"])(retcode=None)
+
+    but uses fixed-string grep (no regex interpretation), via:
+        grep -F -f <patterns_file> updates.csv | cut -d, -f1
+    """
+    # Drop empties and de-dup
+    seen: set[str] = set()
+    patterns = [u for u in urls if u and not (u in seen or seen.add(u))]
+    if not patterns:
+        return ""
+
+    pattern_path: Path | None = None
+    try:
+        # Write patterns one-per-line for grep -f
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tf:
+            for u in patterns:
+                tf.write(u)
+                tf.write("\n")
+            pattern_path = Path(tf.name)
+
+        # grep -F: fixed strings, -f: read patterns from file
+        # Pipe to cut to extract first CSV column (post id)
+        # retcode=None allows grep exit 1 (no matches) without raising
+        return (grep["-F", "-f", str(pattern_path), str(updates_path)] | cut["-d,", "-f1"])(
+            retcode=None
+        )
+
+    finally:
+        if pattern_path is not None:
+            try:
+                pattern_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) -> bool:
@@ -965,10 +947,10 @@ def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) 
     
     This is checked after 'update_posts'
     """
-    updates_path = args.path.updates
+    updates_path = Path(args.path.updates)
     from_export_path = args.path.posts_from_export
     from_api_path = args.path.posts_from_api
-    posts_paths = str(from_export_path) if legacy else f"{from_export_path} {from_api_path}"
+    posts_paths = [from_export_path] if legacy else [from_export_path, from_api_path]
     
     urls = set()
     fileids = set()
@@ -979,21 +961,18 @@ def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) 
 
     found_in_updated = []
     found_in_nonupdated = []
-    
     count = len(urls) + len(fileids)
-    batch_count = (int(count / 100)) or 1
-
+    
     with alive_bar(count, title="Check old urls") as bar:
 
-        for batch in batched(urls, batch_count):
-            _urls = "|".join(batch)
-            result = (grep["-E", _urls, updates_path] | cut["-d,", "-f1"])(retcode=None)
+        for batch in batched(urls, 100):
+            result = grep_urls_in_file(updates_path, batch)
             found_in_updated += result.split()
             bar(len(batch))
 
-        for batch in batched(fileids, batch_count):
+        for batch in batched(fileids, 10):
             _fileids = "|".join(batch)
-            result = (grep["-Eh", _fileids, posts_paths] | cut["-d,", "-f1"])(retcode=None)
+            result = (grep["-Eh", _fileids, *posts_paths] | cut["-d,", "-f1"])(retcode=None)
             found_in_nonupdated += result.split()
             bar(len(batch))
         found_in_nonupdated = set(found_in_nonupdated) - set(found_in_updated)
@@ -1079,11 +1058,12 @@ def find_urls_func(prefix: str | tuple[str, str]):
 
 
 def find_legacy_urls(text: str) -> list[str]:
-    """Return legacy urls found in given string"""
+    """Return legacy urls found in given html string"""
     html = htmlparser(text)
     prefixes: tuple[str, ...] = (
         "/file?id=",
         "https://s3.amazonaws.com/files.websitetoolbox.com/",
+        "http://files.websitetoolbox.com/",
     )
 
     urls: set[str] = set()
@@ -1101,6 +1081,50 @@ def find_legacy_urls(text: str) -> list[str]:
     return sorted(urls)
 
 
+def fileid_from_url(url: str) -> str | None:
+    """Extract a fileid from any of the url formats we currently see.
+
+    Supports:
+      1) (legacy url) .../file?id=<fileid>  
+      2) (legacy url) .../files.websitetoolbox.com/<toolid>/<fileid>/<filename>
+         including:
+           https://s3.amazonaws.com/files.websitetoolbox.com/<toolid>/<fileid>/<filename>
+      3) Non-legacy urls and other urls/paths where fileid is the segment before a filename. 
+         (with a best-effort fallback to last numeric segment)
+
+    Returns None if no plausible fileid can be found.
+    """
+    try:
+        p = urlparse(url)
+    except Exception:
+        return None
+
+    path_segments = [s for s in (p.path or "").split("/") if s]
+
+    # Case #1: /file?id=<fileid>
+    if path_segments and path_segments[-1] == "file" and p.query:
+        qs = parse_qs(p.query, keep_blank_values=True)
+        vals = qs.get("id")
+        if vals and vals[0]:
+            return vals[0]
+
+    # The other cases are all parsed the same way
+    if len(path_segments) >= 2:
+        last = unquote(path_segments[-1])
+        second_to_last = path_segments[-2]
+
+        # If last looks like a filename, second_to_last is probably a fileid
+        if "." in last and second_to_last.isdigit():
+            return second_to_last
+
+        # Otherwise fallback to taking the last numeric segment
+        for seg in reversed(path_segments):
+            if seg.isdigit():
+                return seg
+
+    return None
+
+
 def remove_bad_url(text: str, bad_url: str) -> str:
     """De-link a bad image and add "missing image" text.
     
@@ -1116,8 +1140,8 @@ def remove_bad_url(text: str, bad_url: str) -> str:
             badstuff = link or img
             badstuff.insert_after(" ", notice, Comment(f" Bad URL: {bad_url.replace('https://', '')} "))
             if link:
-                del link["href"]
-            del img["src"]
+                link.attrs.pop("href", None)
+            img.attrs.pop("src", None)
     return html.decode(formatter="html")
 
 
@@ -1132,11 +1156,13 @@ def check_api_auth_settings(args: Namespace) -> bool:
         "x-api-username": args.config.api_username,
     }
     api_params = {"limit": 1}
-    response = requests.get(api_list_posts, params=api_params, headers=api_headers)  # noqa
+    response = requests.get(
+        api_list_posts, params=api_params, headers=api_headers, timeout=30,
+    )
     if response.ok:
         return True
     else:
-        breakpoint()
+        # breakpoint()
         return False
     
 
@@ -1148,7 +1174,7 @@ def check_admin_auth_settings(args: Namespace) -> bool:
         "User-Agent": useragent,
         "Cookie": args.config.admin_cookie,
     }
-    return requests.get(admin_dashboard, headers=admin_headers).ok  # noqa
+    return requests.get(admin_dashboard, headers=admin_headers, timeout=30).ok
 
 
 def requestor(args: Namespace, method: str = "get", headers: dict | None = None):
@@ -1234,24 +1260,32 @@ def list_posts(args: Namespace) -> Iterator:
         "x-api-username": args.config.api_username,
     }
     params = {"limit": 100, "page": 1}
+    
+    try:
+        session = requests.Session()
 
-    session = requests.Session()
-    response = session.get(list_posts, params=params, headers=headers).json()
-    yield response
-
-    while response["has_more"]:
-        params["page"] += 1
-        response = session.get(list_posts, params=params, headers=headers).json()
+        resp = session.get(list_posts, params=params, headers=headers, timeout=30)
+        resp.raise_for_status()
+        response = resp.json()
         yield response
-        
-        # Throttle the requests
-        # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
-        time.sleep(1)
 
-        # Each request counts as a page view
-        # so just do 3 requests (300 posts) during test runs
-        if test_run and params["page"] > 2:
-            return
+        while response["has_more"]:
+            params["page"] += 1
+            resp = session.get(list_posts, params=params, headers=headers, timeout=30)
+            resp.raise_for_status()
+            response = resp.json()
+            yield response
+            
+            # Throttle the requests
+            # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
+            time.sleep(1)
+
+            # Each request counts as a page view
+            # so just do 3 requests (300 posts) during test runs
+            if test_run and params["page"] > 2:
+                return
+    finally:
+        session.close()
 
 
 def rotate_output_archive(args: Namespace, count: int = 10) -> None:
