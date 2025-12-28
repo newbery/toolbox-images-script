@@ -12,9 +12,10 @@ import warnings
 from argparse import Namespace
 from ast import literal_eval
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from functools import cached_property, partial
+from functools import cache, cached_property, partial
 from itertools import chain, islice
 from pathlib import Path
 from typing import Iterator
@@ -50,18 +51,14 @@ USAGE = """
 """
 
 
-def main(argv: list | None = None) -> None:
-    """Main command line entrypoint"""
-    argv = argv or sys.argv[1:]
-    args = parse_args(argv)
-    with requests.Session() as session:
-        init_clients(args, session)
-        args.func(args)
-
-
-def parse_args(argv: list) -> Namespace:
-    """Parse command line args"""
-    modes = {
+@cache
+def modes() -> dict[str, Callable[[Namespace], None]]:
+    """Command line modes.
+    
+    This is defined a cached function instead of a constant so we can keep
+    these definitions near the top of the module for maximum visibility.
+    """
+    return {
         "download_files": mode_download_files,
         "download_links": mode_download_links,
         "update_posts": mode_update_posts,
@@ -69,43 +66,59 @@ def parse_args(argv: list) -> Namespace:
         "update_legacy_links": mode_update_legacy_links,
     }
 
+
+def main(argv: list | None = None) -> None:
+    """Main command line entrypoint"""
+    argv = argv or sys.argv[1:]
+    args = parse_args(argv)
+    context = init_context(args)
+    with requests.Session() as session:
+        context = init_clients(context, session)
+        modes()[args.mode](context)
+
+
+def parse_args(argv: list) -> Namespace:
+    """Parse command line args"""
     parser = argparse.ArgumentParser(
         description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("mode", choices=list(modes))
+    parser.add_argument("mode", choices=list(modes()))
+    return parser.parse_args(argv)
 
-    args = parser.parse_args(argv)
 
-    args.config = config()
-    args.path = paths(args)
-    args.test_run = args.config.test_run != "false"
-    args.func = modes[args.mode]
-    
-    if args.test_run:
+def init_context(args: Namespace, context: Namespace | None = None) -> Namespace:
+    """Initialize context"""
+    context = context or Namespace()
+    context.args = args
+    context.config = config()
+    context.path = paths(context.config)
+    context.test_run = context.config.test_run != "false"    
+    if context.test_run:
         print("---- Test Run ----")
+    return context
 
-    return args
 
-
-def init_clients(args: Namespace, session) -> None:
-    session = requests.Session()
+def init_clients(context: Namespace, session: requests.Session | None = None) -> Namespace:
+    """Initialize service clients and add to context"""
+    session = session or requests.Session()
     session.mount('file://', FileAdapter())
     session.headers.update({"User-Agent": useragent})
 
-    args.session = session
-    args.api_client = APIClient(args)
-    args.admin_client = AdminClient(args)
-    args.downloader = Downloader(args)
+    context.session = session
+    context.api_client = APIClient(context)
+    context.admin_client = AdminClient(context)
+    context.downloader = Downloader(context)
     
     def url_ok(url: str) -> bool:
         with session.head(url, allow_redirects=True, timeout=30) as resp:
             return resp.status_code in (200, 206)
 
-    args.url_ok = url_ok
+    context.url_ok = url_ok
+    return context
 
 
-def mode_download_files(args: Namespace) -> None:
+def mode_download_files(context: Namespace) -> None:
     """Process posts, download images, and then generate a list of downloaded
     images and a list of posts to update.
     
@@ -122,29 +135,29 @@ def mode_download_files(args: Namespace) -> None:
     """
 
     # Confirm that we have access to api
-    if not args.api_client.check_api_auth():
+    if not context.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
         return
     
     # Keep results from the last 10 runs for debugging purposes
-    # rotate_output_archive(args)
-    log(args)
+    # rotate_output_archive(context)
+    log(context)
 
     # Process the data sources
-    posts = posts_from_export(args)
-    posts = posts_from_api(args, posts)
-    files = files_from_posts(args, posts)
-    files = download_files(args, files)
+    posts = posts_from_export(context)
+    posts = posts_from_api(context, posts)
+    files = files_from_posts(context, posts)
+    files = download_files(context, files)
 
     # Generate summary
-    summarize(args, files)
+    summarize(context, files)
     
     print("Done")
 
 
-def mode_download_links(args: Namespace) -> None:
+def mode_download_links(context: Namespace) -> None:
     """Collect links from posts and then generate a list of posts to update.
     
     This is very similar to 'mode_download_files' except no files are downloaded.
@@ -161,32 +174,32 @@ def mode_download_links(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not args.api_client.check_api_auth():
+    if not context.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
         return
     
     # Override configs
-    args.config.old_url_thumb = None
-    args.config.skip_days = 0
+    context.config.old_url_thumb = None
+    context.config.skip_days = 0
 
     # Keep results from the last 10 runs for debugging purposes
     # rotate_output_archive(args)
-    log(args)
+    log(context)
 
     # Process the data sources
-    posts = posts_from_export(args)
-    posts = posts_from_api(args, posts)
-    files = files_from_posts(args, posts)
+    posts = posts_from_export(context)
+    posts = posts_from_api(context, posts)
+    files = files_from_posts(context, posts)
 
     # Generate summary
-    summarize(args, files)
+    summarize(context, files)
     
     print("Done")
 
 
-def mode_update_posts(args: Namespace) -> None:
+def mode_update_posts(context: Namespace) -> None:
     """Process the `posts.csv` result from the last `download_*` run and update
     the posts with image links updated to point to the new image host.
     
@@ -197,19 +210,19 @@ def mode_update_posts(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not args.api_client.check_api_auth():
+    if not context.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
         return
 
-    log(args)
-    update_posts(args)
+    log(context)
+    update_posts(context)
 
     print("Done")
 
 
-def mode_delete_files(args: Namespace) -> None:
+def mode_delete_files(context: Namespace) -> None:
     """Process the `posts.csv` result from the last `download` run and update
     the posts with image links updated to point to the new image host.
     
@@ -218,19 +231,19 @@ def mode_delete_files(args: Namespace) -> None:
     """
     
     # Confirm that we have access to Admin UI
-    if not args.admin_client.check_admin_auth():
+    if not context.admin_client.check_admin_auth():
         print("Admin UI is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
         return
 
-    log(args)
-    delete_files(args)
+    log(context)
+    delete_files(context)
 
     print("Done")
 
 
-def mode_update_legacy_links(args: Namespace) -> None:
+def mode_update_legacy_links(context: Namespace) -> None:
     """Clean up legacy urls in a Toolbox forum.
     
     There are two types of legacy urls: "/file?=" and "files.websitetoolbox.com".
@@ -241,7 +254,7 @@ def mode_update_legacy_links(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not args.api_client.check_api_auth():
+    if not context.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -249,33 +262,42 @@ def mode_update_legacy_links(args: Namespace) -> None:
 
     # Keep results from the last 10 runs for debugging purposes
     # rotate_output_archive(args)
-    log(args)
+    log(context)
 
     # Override configs
-    args.config.old_url_thumb = None
-    args.config.skip_days = 0
+    context.config.old_url_thumb = None
+    context.config.skip_days = 0
 
     # Process the data sources
-    posts = posts_from_export(args, legacy=True)
-    files = files_from_export(args, posts)
+    posts = posts_from_export(context, legacy=True)
+    files = files_from_export(context, posts)
     
     # Generate summary
-    summarize(args, files, legacy=True)
+    summarize(context, files, legacy=True)
 
-    update_posts(args, legacy=True)
+    update_posts(context, legacy=True)
 
     print("Done")
 
 
-def posts_from_export(args: Namespace, legacy: bool = False) -> dict:
+MODES = {
+    "download_files": mode_download_files,
+    "download_links": mode_download_links,
+    "update_posts": mode_update_posts,
+    "delete_files": mode_delete_files,
+    "update_legacy_links": mode_update_legacy_links,
+}
+
+
+def posts_from_export(context: Namespace, legacy: bool = False) -> dict:
     """Process the posts listed in the `posts.csv` file from the Toolbox content
     export, collecting a list of image urls in the message text for any images
     hosted by the Toolbox server.
     """
-    old_url: str = args.config.old_url
-    old_url_thumb: str = args.config.old_url_thumb
-    posts_input_path = args.path.export_dir / "posts.csv"
-    posts_output_path = args.path.posts_from_export
+    old_url: str = context.config.old_url
+    old_url_thumb: str = context.config.old_url_thumb
+    posts_input_path = context.path.export_dir / "posts.csv"
+    posts_output_path = context.path.posts_from_export
     
     prefix: str | tuple[str, str] = (old_url, old_url_thumb) if old_url_thumb else old_url
     find_urls = find_legacy_urls if legacy else find_urls_func(prefix)
@@ -306,18 +328,18 @@ def posts_from_export(args: Namespace, legacy: bool = False) -> dict:
     return posts
 
 
-def posts_from_api(args: Namespace, posts: dict) -> dict:
+def posts_from_api(context: Namespace, posts: dict) -> dict:
     """Process the posts collected via the List Posts API, collecting a list of
     image urls in the message text for any images hosted by the Toolbox server.
     
     The most recent posts are returned first so once we reach a post that we've
     previously processed (via the content export processing), we can skip the rest.
     """
-    test_run = args.test_run
-    client = args.api_client
-    old_url = args.config.old_url
-    old_url_thumb = args.config.old_url_thumb
-    posts_output_path = args.path.posts_from_api
+    test_run = context.test_run
+    client = context.api_client
+    old_url = context.config.old_url
+    old_url_thumb = context.config.old_url_thumb
+    posts_output_path = context.path.posts_from_api
     
     prefix = (old_url, old_url_thumb) if old_url_thumb else old_url
     find_urls = find_urls_func(prefix)
@@ -362,7 +384,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
     return posts
 
 
-def files_from_posts(args: Namespace, posts: dict) -> dict:
+def files_from_posts(context: Namespace, posts: dict) -> dict:
     """Collect the file info for the urls found in the posts and tag the
     ones that should be excluded.
     
@@ -371,11 +393,11 @@ def files_from_posts(args: Namespace, posts: dict) -> dict:
     posts are most likely to benefit from the Toolbox CDN so moving them is
     probably better postponed.
     """
-    test_post_id = args.config.test_post_id
+    test_post_id = context.config.test_post_id
     utc = timezone.utc
-    last_date = datetime.now(utc) - timedelta(days=int(args.config.skip_days))
-    prefix = args.config.old_url
-    prefix_thumb = args.config.old_url_thumb
+    last_date = datetime.now(utc) - timedelta(days=int(context.config.skip_days))
+    prefix = context.config.old_url
+    prefix_thumb = context.config.old_url_thumb
     
     # This is not 100% reliable. It will be wrong if a non-Toolbox file host
     # provider is also using cloudfront.net. But it's good enough for us.
@@ -438,13 +460,13 @@ def files_from_posts(args: Namespace, posts: dict) -> dict:
     return files
 
 
-def files_from_export(args: Namespace, posts: dict) -> dict:
+def files_from_export(context: Namespace, posts: dict) -> dict:
     """This is a special mode for updating legacy links. In this case, we
     need to collect the image data from the export in order to construct
     the updated urls.
     """
-    old_url = args.config.old_url
-    files_input_path = args.path.export_dir / "attachment.csv"
+    old_url = context.config.old_url
+    files_input_path = context.path.export_dir / "attachment.csv"
     
     # Generate map of files/images to posts
     files = {}
@@ -492,11 +514,11 @@ def files_from_export(args: Namespace, posts: dict) -> dict:
     return files
 
 
-def download_files(args: Namespace, files: dict) -> dict:
+def download_files(context: Namespace, files: dict) -> dict:
     """Download files to be moved to the new image host"""
-    test_run = args.test_run
-    download_dir = args.path.download_dir
-    download = args.downloader.download
+    test_run = context.test_run
+    download_dir = context.path.download_dir
+    download = context.downloader.download
 
     def download_file(url, path):
         """Download a single file"""
@@ -560,14 +582,14 @@ def download_files(args: Namespace, files: dict) -> dict:
     return files
 
 
-def summarize(args: Namespace, files: dict, legacy: bool = False) -> None:
+def summarize(context: Namespace, files: dict, legacy: bool = False) -> None:
     """Generate final output results from the merge of the results from processing
     the content export and the list_posts API.
     """
-    from_export_path = args.path.posts_from_export
-    from_api_path = args.path.posts_from_api
-    posts_output_path = args.path.posts
-    files_output_path = args.path.files
+    from_export_path = context.path.posts_from_export
+    from_api_path = context.path.posts_from_api
+    posts_output_path = context.path.posts
+    files_output_path = context.path.files
 
     # Collect set of all post ids that should be skipped
     posts_to_skip = set()
@@ -633,18 +655,18 @@ def summarize(args: Namespace, files: dict, legacy: bool = False) -> None:
     print(f"Summarize: {postcount} posts and {filecount} files/images")
 
 
-def update_posts(args: Namespace, legacy: bool = False) -> None:
+def update_posts(context: Namespace, legacy: bool = False) -> None:
     """Update posts given by `posts.csv` output from last `download` run"""
-    test_run = args.test_run
-    client = args.api_client
-    old_prefix = args.config.old_url
-    thumb_prefix = args.config.old_url_thumb
-    new_prefix = args.config.new_url
-    posts_path = args.path.posts
-    files_path = args.path.files
+    test_run = context.test_run
+    client = context.api_client
+    old_prefix = context.config.old_url
+    thumb_prefix = context.config.old_url_thumb
+    new_prefix = context.config.new_url
+    posts_path = context.path.posts
+    files_path = context.path.files
     
-    updates_output_path = args.path.updates
-    deletes_output_path = args.path.fileids_to_delete
+    updates_output_path = context.path.updates
+    deletes_output_path = context.path.fileids_to_delete
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
     
@@ -658,7 +680,7 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
             files[row["url_thumb"]] = row
 
     # If new_urls don't work, abort
-    if not check_new_urls(args, files):
+    if not check_new_urls(context, files):
         return
     
     urls_to_delete = set()  # files ready to be deleted from Toolbox
@@ -744,13 +766,13 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
     print(f"Update posts: {posts_updated} updated")
 
     # If old_urls still exist, warn the user
-    if not check_old_urls(args, files_to_delete):
+    if not check_old_urls(context, files_to_delete):
         print("! WARNING: At least one old_url or fileid was found in the posts")
         # raise an exception so it's obvious something is amiss
         raise Exception()
 
 
-def delete_files(args: Namespace) -> None:
+def delete_files(context: Namespace) -> None:
     """Delete Toolbox images given by set of fileids.
     
     There is no API endpoint for deleting files so this instead uses the
@@ -759,9 +781,9 @@ def delete_files(args: Namespace) -> None:
     This of course won't work with files not hosted by Toolbox so it will
     throw an error if an attempt to made to do that.
     """
-    test_run = args.test_run
-    client = args.admin_client
-    deletes_path = args.path.fileids_to_delete
+    test_run = context.test_run
+    client = context.admin_client
+    deletes_path = context.path.fileids_to_delete
     fileids_to_delete = json.loads(deletes_path.read_text())
 
     successes = []
@@ -783,18 +805,18 @@ def delete_files(args: Namespace) -> None:
     print(f"Delete files: {count} deleted")
 
 
-def check_new_urls(args: Namespace, files: dict) -> bool:
+def check_new_urls(context: Namespace, files: dict) -> bool:
     """Check new urls for file/image urls given by posts in `posts.csv` output
     from last `output_results` run. If any are inaccessible then return False.
     
     This is checked before 'update_posts'.
     """
-    test_run = args.test_run
-    old_prefix = args.config.old_url
-    thumb_prefix = args.config.old_url_thumb
-    new_prefix = args.config.new_url
-    posts_path = args.path.posts 
-    url_ok = args.url_ok
+    test_run = context.test_run
+    old_prefix = context.config.old_url
+    thumb_prefix = context.config.old_url_thumb
+    new_prefix = context.config.new_url
+    posts_path = context.path.posts 
+    url_ok = context.url_ok
 
     # Set this to False to generate a list of failing urls.
     # Make this an environment setting?
@@ -885,7 +907,7 @@ def grep_urls_in_file(updates_path: Path, urls: list[str]) -> str:
                 pass
 
 
-def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) -> bool:
+def check_old_urls(context: Namespace, files_to_check: list, legacy: bool = False) -> bool:
     """Check if any old_urls are still found in updated posts (and in posts
     not updated).
     
@@ -897,9 +919,9 @@ def check_old_urls(args: Namespace, files_to_check: list, legacy: bool = False) 
     
     This is checked after 'update_posts'
     """
-    updates_path = Path(args.path.updates)
-    from_export_path = args.path.posts_from_export
-    from_api_path = args.path.posts_from_api
+    updates_path = Path(context.path.updates)
+    from_export_path = context.path.posts_from_export
+    from_api_path = context.path.posts_from_api
     posts_paths = [from_export_path] if legacy else [from_export_path, from_api_path]
     
     urls = set()
@@ -1139,11 +1161,11 @@ def read_csv(path: Path) -> Iterator:
             yield row
 
 
-def rotate_output_archive(args: Namespace, count: int = 10) -> None:
+def rotate_output_archive(context: Namespace, count: int = 10) -> None:
     """Archive the output folder and rotate the archives, keeping the last
     'count' archives.
     """
-    output_dir = args.path.output_dir
+    output_dir = context.path.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     archive_dir = output_dir.with_name(output_dir.name + ".archive")
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -1158,11 +1180,11 @@ def rotate_output_archive(args: Namespace, count: int = 10) -> None:
                 shutil.rmtree(path)
 
 
-def log(args: Namespace, text: str | None = None) -> None:
+def log(context: Namespace, text: str | None = None) -> None:
     """Write text to log file. Defaults to just logging the current command."""
     now = datetime.now().isoformat(sep=" ")
     txt = text if text else " ".join(sys.argv)
-    with args.path.log.open("a") as log:
+    with context.path.log.open("a") as log:
         log.write(f"{now} {txt}\n")
 
 
@@ -1189,12 +1211,12 @@ def config() -> Namespace:
     return Namespace(**{**env, **env_secrets, **environ})
 
 
-def paths(args: Namespace) -> Namespace:
+def paths(config: Namespace) -> Namespace:
     """Generate pathlib Paths for all paths specified by config"""
     dirs = ("export_dir", "download_dir", "output_dir")
     output_files = ("posts_from_export", "posts_from_api", "posts", "files", "updates")
     
-    paths = {name: Path(getattr(args.config, name)) for name in dirs}
+    paths = {name: Path(getattr(config, name)) for name in dirs}
     for name in output_files:
         paths[name] = paths["output_dir"] / f"{name}.csv"
     paths["fileids_to_delete"] = paths["output_dir"] / "fileids_to_delete.json"
@@ -1212,9 +1234,9 @@ class File(Enum):
 
 class Client:
     
-    def __init__(self, args: Namespace):
-        self.args = args
-        self.session = args.session
+    def __init__(self, context: Namespace):
+        self.context = context
+        self.session = context.session
 
 
 class Downloader(Client):
@@ -1236,14 +1258,14 @@ class Downloader(Client):
 
 class AdminClient(Client):
     
-    def __init__(self, args: Namespace):
-        super().__init__(args)
-        admin_url = args.config.admin_url.rstrip("/")
+    def __init__(self, context: Namespace):
+        super().__init__(context)
+        admin_url = context.config.admin_url.rstrip("/")
         self.dashboard_endpoint = f"{admin_url}/dashboard"
         self.delete_endpoint = f"{admin_url}/mb/uploading"
         self.files_endpoint = f"{admin_url}/mb/uploading/files"
         self.headers = {
-            "Cookie": args.config.admin_cookie,
+            "Cookie": context.config.admin_cookie,
             "Referer": self.files_endpoint,
         }
     
@@ -1278,14 +1300,14 @@ class AdminClient(Client):
 
 class APIClient(Client):
 
-    def __init__(self, args: Namespace):
-        super().__init__(args)
-        api_url = args.config.api_url
+    def __init__(self, context: Namespace):
+        super().__init__(context)
+        api_url = context.config.api_url
         self.posts_endpoint = f"{api_url}/api/posts"
         self.headers = {
             "Accept": "application/json",
-            "x-api-key": args.config.api_key,
-            "x-api-username": args.config.api_username,
+            "x-api-key": context.config.api_key,
+            "x-api-username": context.config.api_username,
         }
 
     def check_api_auth(self) -> bool:
@@ -1304,7 +1326,7 @@ class APIClient(Client):
         Once this condition is reached, call 'close()' on the iterator returned
         by this generator and continue to next iteration which will end it.
         """
-        test_run = self.args.test_run
+        test_run = self.context.test_run
         params = {"limit": 100, "page": 1}
         get = self.session.get
         url = self.posts_endpoint
