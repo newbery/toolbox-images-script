@@ -14,7 +14,7 @@ from ast import literal_eval
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from functools import partial
+from functools import cached_property, partial
 from itertools import chain, islice
 from pathlib import Path
 from typing import Iterator
@@ -54,7 +54,9 @@ def main(argv: list | None = None) -> None:
     """Main command line entrypoint"""
     argv = argv or sys.argv[1:]
     args = parse_args(argv)
-    args.func(args)
+    with requests.Session() as session:
+        init_clients(args, session)
+        args.func(args)
 
 
 def parse_args(argv: list) -> Namespace:
@@ -86,6 +88,23 @@ def parse_args(argv: list) -> Namespace:
     return args
 
 
+def init_clients(args: Namespace, session) -> None:
+    session = requests.Session()
+    session.mount('file://', FileAdapter())
+    session.headers.update({"User-Agent": useragent})
+
+    args.session = session
+    args.api_client = APIClient(args)
+    args.admin_client = AdminClient(args)
+    args.downloader = Downloader(args)
+    
+    def url_ok(url: str) -> bool:
+        with session.head(url, allow_redirects=True, timeout=30) as resp:
+            return resp.status_code in (200, 206)
+
+    args.url_ok = url_ok
+
+
 def mode_download_files(args: Namespace) -> None:
     """Process posts, download images, and then generate a list of downloaded
     images and a list of posts to update.
@@ -103,7 +122,7 @@ def mode_download_files(args: Namespace) -> None:
     """
 
     # Confirm that we have access to api
-    if not check_api_auth_settings(args):
+    if not args.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -142,7 +161,7 @@ def mode_download_links(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not check_api_auth_settings(args):
+    if not args.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -178,7 +197,7 @@ def mode_update_posts(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not check_api_auth_settings(args):
+    if not args.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -199,7 +218,7 @@ def mode_delete_files(args: Namespace) -> None:
     """
     
     # Confirm that we have access to Admin UI
-    if not check_admin_auth_settings(args):
+    if not args.admin_client.check_admin_auth():
         print("Admin UI is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -222,7 +241,7 @@ def mode_update_legacy_links(args: Namespace) -> None:
     """
     
     # Confirm that we have access to api
-    if not check_api_auth_settings(args):
+    if not args.api_client.check_api_auth():
         print("API is inaccessible!")
         print("Maybe the authentication config is invalid?")
         print("Aborting")
@@ -295,6 +314,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
     previously processed (via the content export processing), we can skip the rest.
     """
     test_run = args.test_run
+    client = args.api_client
     old_url = args.config.old_url
     old_url_thumb = args.config.old_url_thumb
     posts_output_path = args.path.posts_from_api
@@ -314,7 +334,7 @@ def posts_from_api(args: Namespace, posts: dict) -> dict:
 
             stop = False
             page_count = 0
-            api_requests = list_posts(args)
+            api_requests = client.list_posts()
             for page in api_requests:
                 page_count += 1
                 for row in page["data"]:
@@ -476,7 +496,7 @@ def download_files(args: Namespace, files: dict) -> dict:
     """Download files to be moved to the new image host"""
     test_run = args.test_run
     download_dir = args.path.download_dir
-    session = requests.Session()
+    download = args.downloader.download
 
     def download_file(url, path):
         """Download a single file"""
@@ -488,17 +508,7 @@ def download_files(args: Namespace, files: dict) -> dict:
         elif path_new.exists():
             size = path_new.stat().st_size
         else:
-            with session.get(url, stream=True, timeout=60) as resp:
-                if resp.status_code == 200:
-                    path_new.parent.mkdir(parents=True, exist_ok=True)
-                    with path_new.open("wb") as f:
-                        for chunk in resp.iter_content(1024):
-                            f.write(chunk)
-                    # size = int(resp.headers['content-length'])
-                    cl = resp.headers.get("Content-Length")
-                    size = int(cl) if cl is not None else path_new.stat().st_size
-                else:
-                    size = 0
+            size = download(url, path_new)
         return size
 
     skipped = 0
@@ -626,7 +636,7 @@ def summarize(args: Namespace, files: dict, legacy: bool = False) -> None:
 def update_posts(args: Namespace, legacy: bool = False) -> None:
     """Update posts given by `posts.csv` output from last `download` run"""
     test_run = args.test_run
-    api_url = args.config.api_url
+    client = args.api_client
     old_prefix = args.config.old_url
     thumb_prefix = args.config.old_url_thumb
     new_prefix = args.config.new_url
@@ -636,14 +646,6 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
     updates_output_path = args.path.updates
     deletes_output_path = args.path.fileids_to_delete
 
-    update_posts = f"{api_url}/api/posts/"
-    headers = {
-        "Accept": "application/json",
-        "x-api-key": args.config.api_key,
-        "x-api-username": args.config.api_username
-    }
-
-    request = requestor(args, "post")
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
     
     # Load file data from output_results, keyed by any urls found in posts
@@ -713,10 +715,7 @@ def update_posts(args: Namespace, legacy: bool = False) -> None:
                     bar()
                     continue
 
-                url = update_posts + pid
-                body = {"content": new_message}  # why is 'message' named 'content' here?
-                resp = request(url, json=body, headers=headers)
-                if resp.status_code == 200:
+                if client.update_post(pid, new_message):
                     urls_to_delete.update(image_urls)
                     posts_updated += 1
                     result = "success"
@@ -761,69 +760,25 @@ def delete_files(args: Namespace) -> None:
     throw an error if an attempt to made to do that.
     """
     test_run = args.test_run
-    admin_url = args.config.admin_url.rstrip("/")
+    client = args.admin_client
     deletes_path = args.path.fileids_to_delete
     fileids_to_delete = json.loads(deletes_path.read_text())
 
-    delete_endpoint = f"{admin_url}/mb/uploading"
-    files_page = f"{admin_url}/mb/uploading/files"
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": useragent,
-        "Cookie": args.config.admin_cookie,
-        "Referer": files_page,
-    })
-
-    # Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)
-    r = session.get(files_page, timeout=30)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    form = soup.find("form", {"id": "frmFiles"})
-    hidden = {}
-    if form:
-        for i in form.select('input[type="hidden"][name]'):
-            hidden[i["name"]] = i.get("value", "")
-
-    # Force the action we want
-    hidden["action"] = "deleteFiles"
-
     successes = []
-    failed = {}
     count = len(fileids_to_delete)
 
-    with alive_bar(count, title="Delete files") as bar:
-        for fileids in batched(fileids_to_delete, 100):
-            if not fileids:
-                continue
-
-            # This has changed recently (2025/12) to repeated deleteimg fields (like checkboxes), not CSV
-            data = list(hidden.items()) + [("deleteimg", fid) for fid in fileids]
-
-            if test_run:
-                # Don’t actually delete in test runs
-                resp = "TEST RUN"
-                resp_ok = True
-            else:
-                resp = session.post(delete_endpoint, data=data, timeout=30)
-                resp_ok = resp.ok
-
-            if resp_ok:
+    try:
+        with alive_bar(count, title="Delete files") as bar:
+            for fileids in batched(fileids_to_delete, 100):
+                if not fileids:
+                    continue
+                client.delete_files(fileids)
                 successes.extend(fileids)
-                print(f"Deleted {len(successes)}")
-            else:
-                failed = {"data": data, "successes": successes, "response": resp}
-                break
-
-            bar(len(fileids))
-
-            if not test_run:
-                time.sleep(1.5)
-
-    if failed:
-        print("File delete failed; last payload had", len(failed["data"]), "fields")
-        # breakpoint()
-        raise Exception
+                bar(len(fileids))
+                if not test_run:
+                    time.sleep(1.5)
+    finally:
+        print(f"Successfully deleted: {successes}")
 
     print(f"Delete files: {count} deleted")
 
@@ -838,8 +793,9 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
     old_prefix = args.config.old_url
     thumb_prefix = args.config.old_url_thumb
     new_prefix = args.config.new_url
-    posts_path = args.path.posts
-    
+    posts_path = args.path.posts 
+    url_ok = args.url_ok
+
     # Set this to False to generate a list of failing urls.
     # Make this an environment setting?
     stop_fast = False
@@ -852,11 +808,6 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
     # This only works in TEST_RUN since real post updates need public urls.
     if test_run and not new_prefix.lower().startswith(("https://", "http://")):
         new_prefix = f"file://{str(Path(new_prefix).resolve())}/"
-        session = requests.Session()
-        session.mount('file://', FileAdapter())
-        head = session.head
-    else:
-        head = requestor(args, "head")
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
@@ -874,11 +825,10 @@ def check_new_urls(args: Namespace, files: dict) -> bool:
                     continue
                 seen.add(url)
                 new_url = urldata.get("new_url") or new_url_func(url)
-                with head(new_url, allow_redirects=True, timeout=30) as response:
-                    if response.status_code not in (200, 206):
-                        images_errors.add((new_url, url))
-                        if stop_fast:
-                            raise Exception("Image not found:", new_url, url)
+                if not url_ok(new_url):
+                    images_errors.add(new_url)
+                    if stop_fast:
+                        raise Exception("Image not found:", new_url)
                 time.sleep(sleep)
             bar()
 
@@ -1145,59 +1095,6 @@ def remove_bad_url(text: str, bad_url: str) -> str:
     return html.decode(formatter="html")
 
 
-def check_api_auth_settings(args: Namespace) -> bool:
-    """Check that the API key/username in config are valid. If not, return False."""
-    api_url = args.config.api_url
-    api_list_posts = f"{api_url}/api/posts"
-    api_headers = {
-        "User-Agent": useragent,
-        "Accept": "application/json",
-        "x-api-key": args.config.api_key,
-        "x-api-username": args.config.api_username,
-    }
-    api_params = {"limit": 1}
-    response = requests.get(
-        api_list_posts, params=api_params, headers=api_headers, timeout=30,
-    )
-    if response.ok:
-        return True
-    else:
-        # breakpoint()
-        return False
-    
-
-def check_admin_auth_settings(args: Namespace) -> bool:
-    """Check that the Admin cookie in config is valid. If not, return False."""
-    admin_url = args.config.admin_url
-    admin_dashboard = f"{admin_url}/dashboard"
-    admin_headers = {
-        "User-Agent": useragent,
-        "Cookie": args.config.admin_cookie,
-    }
-    return requests.get(admin_dashboard, headers=admin_headers, timeout=30).ok
-
-
-def requestor(args: Namespace, method: str = "get", headers: dict | None = None):
-    """Just a shim to make it easy to switch to a fake requestor for testing"""
-    if args.test_run:
-
-        class FakeResponse:
-            status_code = 200
-            ok = True
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-                
-        return lambda *a, **b: FakeResponse()
-    
-    session = requests.Session()
-    session.headers.update({"User-Agent": useragent} | (headers or {}))
-    return getattr(session, method)
-
-
 def friendly_size(size: int) -> str:
     """Return a friendly string representing the byte size with units"""
     unit = "bytes"
@@ -1240,52 +1137,6 @@ def read_csv(path: Path) -> Iterator:
         reader = csv.DictReader(f)
         for row in reader:
             yield row
-
-
-def list_posts(args: Namespace) -> Iterator:
-    """A generator that returns the results of the "List Posts" API call
-    one response 'page' at a time. Each page contains up to 100 posts.
-    
-    This API call returns the most recent posts first. We can stop once we
-    reach a post that has already been processed (via `posts_from_export`).
-    Once this condition is reached, call 'close()' on the iterator returned
-    by this generator and continue to next iteration which will end it.
-    """
-    test_run = args.test_run
-    api_url = args.config.api_url
-    list_posts = f"{api_url}/api/posts"
-    headers = {
-        "Accept": "application/json",
-        "x-api-key": args.config.api_key,
-        "x-api-username": args.config.api_username,
-    }
-    params = {"limit": 100, "page": 1}
-    
-    try:
-        session = requests.Session()
-
-        resp = session.get(list_posts, params=params, headers=headers, timeout=30)
-        resp.raise_for_status()
-        response = resp.json()
-        yield response
-
-        while response["has_more"]:
-            params["page"] += 1
-            resp = session.get(list_posts, params=params, headers=headers, timeout=30)
-            resp.raise_for_status()
-            response = resp.json()
-            yield response
-            
-            # Throttle the requests
-            # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
-            time.sleep(1)
-
-            # Each request counts as a page view
-            # so just do 3 requests (300 posts) during test runs
-            if test_run and params["page"] > 2:
-                return
-    finally:
-        session.close()
 
 
 def rotate_output_archive(args: Namespace, count: int = 10) -> None:
@@ -1357,6 +1208,135 @@ class File(Enum):
     skipped = 1
     downloaded = 2
     error = 3
+
+
+class Client:
+    
+    def __init__(self, args: Namespace):
+        self.args = args
+        self.session = args.session
+
+
+class Downloader(Client):
+    
+    def download(self, url: str, path: Path) -> int:
+        with self.session.get(url, stream=True, timeout=60) as resp:
+            if resp.status_code == 200:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("wb") as f:
+                    for chunk in resp.iter_content(1024):
+                        if chunk:
+                            f.write(chunk)
+                cl = resp.headers.get("Content-Length")
+                size = int(cl) if cl is not None else path.stat().st_size
+            else:
+                size = 0
+        return size
+
+
+class AdminClient(Client):
+    
+    def __init__(self, args: Namespace):
+        super().__init__(args)
+        admin_url = args.config.admin_url.rstrip("/")
+        self.dashboard_endpoint = f"{admin_url}/dashboard"
+        self.delete_endpoint = f"{admin_url}/mb/uploading"
+        self.files_endpoint = f"{admin_url}/mb/uploading/files"
+        self.headers = {
+            "Cookie": args.config.admin_cookie,
+            "Referer": self.files_endpoint,
+        }
+    
+    def check_admin_auth(self) -> bool:
+        """Check that the Admin cookie in config is valid. If not, return False."""
+        url = self.dashboard_endpoint
+        with self.session.get(url, headers=self.headers, timeout=30) as resp:
+            return resp.ok
+
+    @cached_property
+    def hidden_defaults(self) -> dict:
+        """Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)"""
+        url = self.files_endpoint
+        with self.session.get(url, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            form = soup.find("form", {"id": "frmFiles"})
+            hidden = {}
+            if form:
+                for i in form.select('input[type="hidden"][name]'):
+                    hidden[i["name"]] = i.get("value", "")
+            return hidden
+
+    def delete_files(self, fileids) -> bool:
+        url = self.delete_endpoint
+        defaults = list(self.hidden_defaults.items()) + [("action", "deleteFiles")]
+        data = defaults + [("deleteimg", fileid) for fileid in fileids]
+        with self.session.post(url, data=data, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            return resp.ok
+
+
+class APIClient(Client):
+
+    def __init__(self, args: Namespace):
+        super().__init__(args)
+        api_url = args.config.api_url
+        self.posts_endpoint = f"{api_url}/api/posts"
+        self.headers = {
+            "Accept": "application/json",
+            "x-api-key": args.config.api_key,
+            "x-api-username": args.config.api_username,
+        }
+
+    def check_api_auth(self) -> bool:
+        """Check that the API key/username in config are valid. If not, return False."""
+        url = self.posts_endpoint
+        params = {"limit": 1}
+        with self.session.get(url, params=params, headers=self.headers, timeout=30) as resp:
+            return resp.ok
+    
+    def list_posts(self):
+        """A generator that returns the results of the "List Posts" API call
+        one response 'page' at a time. Each page contains up to 100 posts.
+        
+        This API call returns the most recent posts first. We can stop once we
+        reach a post that has already been processed (via `posts_from_export`).
+        Once this condition is reached, call 'close()' on the iterator returned
+        by this generator and continue to next iteration which will end it.
+        """
+        test_run = self.args.test_run
+        params = {"limit": 100, "page": 1}
+        get = self.session.get
+        url = self.posts_endpoint
+        
+        with get(url, params=params, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            response = resp.json()
+            yield response
+
+        while response["has_more"]:
+            params["page"] += 1
+            with get(url, params=params, headers=self.headers, timeout=30) as resp:
+                resp.raise_for_status()
+                response = resp.json()
+                yield response
+            
+            # Throttle the requests
+            # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
+            time.sleep(1)
+
+            # Each request counts as a page view
+            # so just do 3 requests (300 posts) during test runs
+            if test_run and params["page"] > 2:
+                return
+
+    def update_post(self, pid: str, message: str):
+        """Call the "Update Post" API endpoint to update a post message."""
+        url = f"{self.posts_endpoint}/{pid}"
+        body = {"content": message}
+        with self.session.post(url, json=body, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            return resp.ok
 
 
 if __name__ == "__main__":
