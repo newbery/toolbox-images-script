@@ -19,6 +19,7 @@ plumbum = "^1.8.0"
 ruff = "*"
 pyright = "*"
 pdbpp = "*"
+pytest = "*"
 
 
 [build-system]
