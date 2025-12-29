@@ -33,7 +33,7 @@ As is usual in such cases, it's strongly recommended to install the requirements
 in a Python virtualenv (or a Docker image). There are several ways to do this but
 I'll just describe my preferred mechanism using Poetry (https://python-poetry.org/)
 
-First, make sure you have Python 3.8 or greater available on your system.
+First, make sure you have Python 3.11 or greater available on your system.
 If you need to install different versions of Python for any reason, I suggest
 using `pyenv` (https://github.com/pyenv/pyenv)
 
@@ -57,18 +57,27 @@ poetry install
 # (3) Activate the virtualenv
 poetry shell
 
-# (4) Download and unzip the forum content export files (as csv)
+# (4) From the Website Toolbox admin portal, navigate to "Integrate" >> "Export"
+# and download the "Forum Content" (as csv) then unzip the resulting zip file
 # into a subdirectory of this directory (this step is manual and optional)
 
 # (5) Update the script configuration (see below)
 
-# (6) Run the script to process the posts data and download images
-./toolbox.py download
+# (6) Process the posts data and download images.
+./toolbox.py download_files
 
 # (7) Copy the downloaded images to the new image host (this step is manual)
 
-# (8) Run the script to process the 'download' result and update the posts.
-./toolbox.py update
+# (8) Process the 'download' result and update the posts. This will first
+# run a preflight to check that all the new urls (at the new image host)
+# can be found before updating the posts with the new urls.
+./toolbox.py update_posts
+
+# (9) Delete all the images from the Website Toolbox server which are now hosted
+# at the new image host. To confirm that this has worked as expected, compare the
+# File Storage numbers (Admin portal: "Files" >> "Storage") from before and after
+# running this last step.
+./toolbox.py delete_files
 
 ```
 
@@ -107,7 +116,7 @@ full string should look something like this (all on one line):
 What does toolbox.py do?
 ------------------------
 
-The 'download' action:
+The 'download_files' action:
 - checks that the authentication values in `.env` files are valid (if not, abort)
 - archives the results from a previous run (archive contains last 5 results)
 - collects post data from `posts.csv` content export file
@@ -116,9 +125,11 @@ The 'download' action:
 - generates a final list of images-to-move (from all images successfully downloaded)
 - generates a final list of posts-to-update (excluding posts with problem images)
 
-The 'update' action:
+The 'update_posts' action:
 - checks if all images-to-move are accessible from new host (if not, abort)
 - updates all posts-to-update with updated image links in their messages
+
+The 'delete_files' action
 - deletes all images-to-move from old host
 
 All API requests are throttled to 1 request per second since a 3 reqs/sec limit
@@ -133,7 +144,7 @@ Only those forum-hosted images linked directly from within post message text
 are managed with this script. This is most of the images in the forum for which
 this script is written so that's good enough for our purposes.
 
-The following images and files are NOT managed:
+The following images and files are NOT currently managed:
 - images/files included in posts as "attachments"
 - private message images/files
 - album images/files
