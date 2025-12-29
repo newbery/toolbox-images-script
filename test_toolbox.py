@@ -723,7 +723,7 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
         context_tmp.path.files,
         ["fileid", "pids", "url", "url_thumb", "url_file", "new_url", "result"],
         [
-            ["123", "{'1'}", "https://old.example.com/123/a.jpg", "https://old.example.com/thumb/123/a.jpg", "/file?id=123", "", str(toolbox.File.downloaded.value)],
+            ["123", "{\'1\'}", "https://old.example.com/123/a.jpg", "https://old.example.com/thumb/123/a.jpg", "/file?id=123", "", str(toolbox.File.downloaded.value)],
             ["555", "{'2'}", "https://old.example.com/555/a.jpg", "", "", "", str(toolbox.File.skipped.value)],
         ],
     )
@@ -732,31 +732,31 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
     monkeypatch.setattr(toolbox, "check_new_urls", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(toolbox, "check_old_urls", lambda *_args, **_kwargs: True)
 
-    # Fake API client
-    updated = {}
-
+    # Fake API client: should NOT be called in dry-run mode.
     class FakeClient:
-        def update_post(self, pid, message):
-            updated[pid] = message
-            return True
+        def update_post(self, _pid, _message):
+            raise AssertionError("update_post should not be called in dry-run mode")
 
     context_tmp.api_client = FakeClient()
 
     toolbox.update_posts(context_tmp, legacy=False)
 
-    # Post 1 should have new host URLs
-    assert "https://new.example.com/123/a.jpg" in updated["1"]
-    assert "https://new.example.com/thumb/123/a.jpg" in updated["1"]
-    # /file?id link replaced with full url
-    assert "/file?id=123" not in updated["1"]
-
-    # updates.csv should exist
+    # updates.csv should include a dry-run result with rewritten content for pid 1
     updates_rows = list(toolbox.read_csv(context_tmp.path.updates))
-    assert any(r["pid"] == "1" and r["result"] == "success" for r in updates_rows)
+    row1 = next(r for r in updates_rows if r["pid"] == "1")
+    assert row1["result"] == "dry_run"
+    assert "https://new.example.com/123/a.jpg" in row1["content"]
+    assert "https://new.example.com/thumb/123/a.jpg" in row1["content"]
+    
+    # /file?id link replaced with full url
+    assert "/file?id=123" not in row1["content"]
 
-    # fileids_to_delete.json should contain 123 (since post 1 updated)
+    # In dry-run mode, fileids_to_delete.json is intentionally left empty,
+    # while the would-delete set is written to fileids_to_delete.dry_run.json.
     fileids = json.loads(context_tmp.path.fileids_to_delete.read_text(encoding="utf-8"))
-    assert fileids == ["123"]
+    assert fileids == []
+    dry_fileids = json.loads(context_tmp.path.fileids_to_delete_dry_run.read_text(encoding="utf-8"))
+    assert dry_fileids == ["123"]
 
 
 def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
@@ -776,6 +776,11 @@ def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
             calls.append(list(fileids))
 
     context_tmp.admin_client = FakeAdmin()
+
+    # Run in apply mode so the admin client is invoked.
+    context_tmp.test_run = False
+    context_tmp.apply = True
+    context_tmp.args = Namespace(yes=True)
 
     toolbox.delete_files(context_tmp)
 
@@ -849,7 +854,7 @@ def test_init_context_sets_test_run_true_and_prints_banner(monkeypatch, capsys):
 
     assert context.test_run is True
     out = capsys.readouterr().out
-    assert "---- Test Run ----" in out
+    assert "---- Dry Run (no remote changes) ----" in out
 
 
 def test_init_context_reuses_existing_namespace(monkeypatch):
