@@ -75,12 +75,16 @@ def context_tmp(tmp_path) -> Namespace:
         new_url="https://new.example.com/",
         skip_days="0",
         test_post_id="",
-        test_run="true",
+        dry_run="true",
     )
 
     context = Namespace(config=cfg)
     context.path = toolbox.paths(cfg)
-    context.test_run = True
+    context.args = Namespace(mode="download_files", verbose=False, apply=False, dry_run=True, yes=True)
+
+    # Most unit tests run in dry-run mode by default.
+    context.dry_run = True
+
     return context
 
 
@@ -509,16 +513,15 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
 
         def download(self, url, path_new):
             self.calls.append((url, str(path_new)))
-            full = context_tmp.path.download_dir / path_new
-            full.parent.mkdir(parents=True, exist_ok=True)
-            full.write_bytes(b"abc")
+            path_new.parent.mkdir(parents=True, exist_ok=True)
+            path_new.write_bytes(b"abc")
             return 3
 
     context_tmp.downloader = FakeDownloader()
 
     files = {
-        "1": {"url": "https://x/1.jpg", "url_thumb": "", "url_file": "", "path": "1.jpg", "pids": {"p1"}, "result": ""},
-        "2": {"url": "https://x/2.jpg", "url_thumb": "https://x/t2.jpg", "url_file": "", "path": "2.jpg", "pids": {"p2"}, "result": ""},
+        "1": {"url": "https://x/1.jpg", "url_thumb": "", "url_file": "", "path": "1.jpg", "pids": {"p1"}, "result": toolbox.File.default},
+        "2": {"url": "https://x/2.jpg", "url_thumb": "https://x/t2.jpg", "url_file": "", "path": "2.jpg", "pids": {"p2"}, "result": toolbox.File.default},
         "3": {"url": "https://x/3.jpg", "url_thumb": "", "url_file": "", "path": "3.jpg", "pids": {"p3"}, "result": toolbox.File.skipped},
     }
 
@@ -605,11 +608,11 @@ def test_check_new_urls_respects_skip_and_generates_file_scheme(context_tmp, tmp
     validation via `url_ok`.
     """
 
-    # Use local directory as "new_url" and test_run=True to enable file:// prefix
+    # Use local directory as "new_url" and dry-run=True to enable file:// prefix
     new_root = tmp_path / "new"
     new_root.mkdir()
     context_tmp.config.new_url = str(new_root)  # not http(s)
-    context_tmp.test_run = True
+    context_tmp.dry_run = True
 
     # posts.csv with two urls, one skipped, one checked
     _write_csv(
@@ -778,8 +781,7 @@ def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
     context_tmp.admin_client = FakeAdmin()
 
     # Run in apply mode so the admin client is invoked.
-    context_tmp.test_run = False
-    context_tmp.apply = True
+    context_tmp.dry_run = False
     context_tmp.args = Namespace(yes=True)
 
     toolbox.delete_files(context_tmp)
@@ -820,11 +822,11 @@ def test_parse_args_rejects_unknown_mode(monkeypatch):
         toolbox.parse_args(["nope"])
 
 
-def test_init_context_populates_context_and_test_run_false(monkeypatch, capsys):
+def test_init_context_populates_context_and_dry_run_false(monkeypatch, capsys):
     """The `init_context` function should populate context with args/config/paths
-    and set `test_run` False when `config.test_run` is exactly the string 'false'.
+    and set `dry_run` False when `config.dry_run` is exactly the string 'false'.
     """
-    cfg = Namespace(test_run="false")
+    cfg = Namespace(dry_run="false")
     paths_obj = Namespace(p="x")
 
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
@@ -836,15 +838,15 @@ def test_init_context_populates_context_and_test_run_false(monkeypatch, capsys):
     assert context.args is args
     assert context.config is cfg
     assert context.path is paths_obj
-    assert context.test_run is False
+    assert context.dry_run is False
     assert capsys.readouterr().out == ""
 
 
-def test_init_context_sets_test_run_true_and_prints_banner(monkeypatch, capsys):
-    """The `init_context` function should set `test_run` True for any `config.test_run`
-    value other than literal 'false' and print the test-run banner.
+def test_init_context_sets_dry_run_true_and_prints_banner(monkeypatch, capsys):
+    """The `init_context` function should set `dry_run` True for any `config.dry_run`
+    value other than literal 'false' and print the dry-run banner.
     """
-    cfg = Namespace(test_run="true")
+    cfg = Namespace(dry_run="true")
 
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
     monkeypatch.setattr(toolbox, "paths", lambda _cfg: Namespace())
@@ -852,7 +854,7 @@ def test_init_context_sets_test_run_true_and_prints_banner(monkeypatch, capsys):
     args = Namespace(mode="download_files", verbose=False)
     context = toolbox.init_context(args)
 
-    assert context.test_run is True
+    assert context.dry_run is True
     out = capsys.readouterr().out
     assert "---- Dry Run (no remote changes) ----" in out
 
@@ -861,7 +863,7 @@ def test_init_context_reuses_existing_namespace(monkeypatch):
     """The `init_context` function should update and return the provided context
     Namespace rather than allocating a new one.
     """
-    cfg = Namespace(test_run="false")
+    cfg = Namespace(dry_run="false")
 
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
     monkeypatch.setattr(toolbox, "paths", lambda _cfg: Namespace())

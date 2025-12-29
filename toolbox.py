@@ -803,7 +803,9 @@ def apply_update_plan(*, context: Namespace, plan_path: Path) -> tuple[int, int,
     dry_run = context.dry_run
     client = context.api_client
     updates_output_path = context.path.updates
-    count = max(0, linecount(plan_path) - 1)
+    
+    # The plan file is JSONL with no header row.
+    count = max(0, linecount(plan_path))
     
     posts_updated = 0
     posts_would_update = 0
@@ -894,7 +896,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
 
         # Final interactive confirmation in APPLY mode (remote changes).
         total_posts = max(0, linecount(posts_path) - 1)
-        posts_to_update = max(0, linecount(plan_path) - 1)
+        posts_to_update = max(0, linecount(plan_path))
         if not dry_run and posts_to_update and not getattr(context.args, "yes", False):
             action = "update legacy links in posts" if legacy else "update posts"
             
