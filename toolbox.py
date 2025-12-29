@@ -1465,7 +1465,15 @@ def paths(config: Namespace) -> Namespace:
     dirs = ("export_dir", "download_dir", "output_dir")
     output_files = ("posts_from_export", "posts_from_api", "posts", "files", "updates")
     
+    # Collect directory paths and ensure they exist.
     paths = {name: Path(getattr(config, name)) for name in dirs}
+    for path in paths.values():
+        # Don't create 'parents' as that might allow bad settings to create
+        # directories in unexpected locations. We could maybe do better
+        # by enforcing only a single folder name for each path setting but
+        # this is probably good enough for now.
+        path.mkdir(exist_ok=True)
+    
     for name in output_files:
         paths[name] = paths["output_dir"] / f"{name}.csv"
     paths["fileids_to_delete"] = paths["output_dir"] / "fileids_to_delete.json"
