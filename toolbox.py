@@ -53,11 +53,7 @@ USAGE = """
 
 @cache
 def modes() -> dict[str, Callable[[Namespace], None]]:
-    """Command line modes.
-    
-    This is defined a cached function instead of a constant so we can keep
-    these definitions near the top of the module for maximum visibility.
-    """
+    """Command line modes"""
     return {
         "download_files": mode_download_files,
         "download_links": mode_download_links,
@@ -87,7 +83,7 @@ def parse_args(argv: list) -> Namespace:
     # Safety controls
     #
     # Default behavior is "dry-run" unless explicitly overridden, either by:
-    #   * the config env var TOOLBOX_TEST_RUN, or
+    #   * the config env var TOOLBOX_DRY_RUN, or
     #   * the explicit CLI flags below.
     #
     # Destructive operations are additionally guarded at the service-client
@@ -121,19 +117,16 @@ def init_context(args: Namespace, context: Namespace | None = None) -> Namespace
     context.config = config()
     context.path = paths(context.config)
     
-    # Determine dry-run / apply mode.
+    # Determine dry-run mode.
     # Precedence: explicit CLI flags > config/env (default: dry-run).
-    config_test_run = parse_bool(getattr(context.config, "test_run", None), default=True)
     if getattr(args, "apply", False):
-        context.test_run = False
+        context.dry_run = False
     elif getattr(args, "dry_run", False):
-        context.test_run = True
+        context.dry_run = True
     else:
-        context.test_run = config_test_run
+        context.dry_run = parse_bool(getattr(context.config, "dry_run", None), default=True)
 
-    context.apply = not context.test_run
-
-    if context.test_run:
+    if context.dry_run:
         print("---- Dry Run (no remote changes) ----")
 
     return context
@@ -365,7 +358,7 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
     The most recent posts are returned first so once we reach a post that we've
     previously processed (via the content export processing), we can skip the rest.
     """
-    test_run = context.test_run
+    dry_run = context.dry_run
     client = context.api_client
     old_url = context.config.old_url
     old_url_thumb = context.config.old_url_thumb
@@ -407,7 +400,7 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
                     posts_output.writerow([pid, date, image_urls, message])
                     bar()
                     
-                if stop or (test_run and page_count > 3):
+                if stop or (dry_run and page_count > 3):
                     break
     
     print(f"From api: Processed {count} posts; Found {found} with image links")
@@ -546,7 +539,7 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
 
 def download_files(context: Namespace, files: dict) -> dict:
     """Download files to be moved to the new image host"""
-    test_run = context.test_run
+    dry_run = context.dry_run
     download_dir = context.path.download_dir
     download = context.downloader.download
     
@@ -598,7 +591,7 @@ def download_files(context: Namespace, files: dict) -> dict:
             
             bar(1)
             
-            if test_run and downloaded > 11:
+            if dry_run and downloaded > 11:
                 skipped = len(files) - len(errors) - downloaded
                 break
 
@@ -685,10 +678,179 @@ def summarize(context: Namespace, files: dict, legacy: bool = False) -> None:
     print(f"Summarize: {postcount} posts and {filecount} files/images")
 
 
+def rewrite_post_content(
+    *,
+    message: str,
+    image_urls: list[str],
+    files: dict[str, dict],
+    legacy: bool,
+    new_url_func: Callable[[str], str],
+) -> tuple[str, set[str]]:
+    """Rewrite a post message and return (new_message, touched_urls).
+
+    `touched_urls` are the original URLs that were replaced or de-linked. This is
+    later used to compute safe delete candidates.
+    """
+    new_message = message
+    touched_urls: set[str] = set()
+
+    for url in image_urls:
+        try:
+            file = files[url]
+        except KeyError as e:
+            raise KeyError(f"URL referenced in posts.csv not found in files.csv: {url}") from e
+
+        # Updating legacy link
+        if legacy:
+            if file.get("new_url"):
+                new_message = new_message.replace(url, file["new_url"])
+                touched_urls.add(url)
+            continue
+
+        # De-link missing file (discovered during download)
+        if file["result"] is File.error:
+            new_message = remove_bad_url(new_message, url)
+            touched_urls.add(url)
+            continue
+
+        # Skip files that were skipped during download
+        if file["result"] is File.skipped:
+            continue
+
+        # Replace file url with new url
+        new_url = new_url_func(url)
+        new_message = new_message.replace(url, new_url)
+        touched_urls.add(url)
+
+        # Full image links often accompany thumb images
+        if "/thumb/" in url:
+            full_url = url.replace("thumb/", "")
+            if full_url in files:
+                new_full_url = new_url_func(full_url)
+                new_message = new_message.replace(full_url, new_full_url)
+                touched_urls.add(full_url)
+
+        # Toolbox sometimes uses a special "/file?id=" link
+        if file["url_file"]:
+            new_full_url = new_url_func(file["url"])
+            new_message = new_message.replace(file["url_file"], new_full_url)
+            touched_urls.add(file["url"])
+
+    return new_message, touched_urls
+
+
+def build_update_plan(
+    *,
+    posts_path: Path,
+    files: dict[str, dict],
+    legacy: bool,
+    new_url_func: Callable[[str], str],
+) -> tuple[Path, list[str], set[str]]:
+    """Build an on-disk plan of posts that would change.
+
+    Returns:
+        (plan_path, sample_pids, urls_touched)
+    """
+    sample_pids: list[str] = []
+    urls_touched: set[str] = set()
+    temp = tempfile.NamedTemporaryFile
+    count = max(0, linecount(posts_path) - 1)
+
+    with temp(mode="w", encoding="utf-8", newline="\n", delete=False) as plan_file:
+        plan_path = Path(plan_file.name)
+
+        with alive_bar(count, title="Plan post updates") as bar:
+            for row in read_csv(posts_path):
+                pid = row["pid"]
+                image_urls = literal_eval(row["image_urls"])
+
+                new_message, touched_urls = rewrite_post_content(
+                    message=row["message"],
+                    image_urls=image_urls,
+                    files=files,
+                    legacy=legacy,
+                    new_url_func=new_url_func,
+                )
+
+                if new_message != row["message"]:
+                    if len(sample_pids) < 10:
+                        sample_pids.append(pid)
+                    urls_touched.update(touched_urls)
+
+                    plan_file.write(
+                        json.dumps(
+                            {
+                                "pid": pid,
+                                "content": new_message,
+                                "touched_urls": sorted(touched_urls),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+                bar()
+
+    return plan_path, sample_pids, urls_touched
+
+
+def apply_update_plan(*, context: Namespace, plan_path: Path) -> tuple[int, int, set[str], set[str], set[str]]:
+    """Apply (or simulate) the planned updates, streaming the plan from disk.
+
+    Returns:
+        (posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors)
+    """
+    dry_run = context.dry_run
+    client = context.api_client
+    updates_output_path = context.path.updates
+    count = max(0, linecount(plan_path) - 1)
+    
+    posts_updated = 0
+    posts_would_update = 0
+    posts_errors: set[str] = set()
+
+    # Track only the urls we actually touched (replaced/de-linked), so we don't
+    # accidentally propose deleting skipped/untouched files.
+    urls_to_delete: set[str] = set()  # urls safe (or would be safe) to delete
+    urls_to_keep: set[str] = set()    # urls not safe to delete
+
+    with updates_output_path.open("w", newline="") as f:
+        fieldnames = ["pid", "result", "content"]
+        updates_output = csv.writer(f)
+        updates_output.writerow(fieldnames)
+
+        with alive_bar(count, title="Update posts") as bar:
+            with plan_path.open("r", encoding="utf-8") as plan_in:
+                for line in plan_in:
+                    item = json.loads(line)
+                    pid = item["pid"]
+                    new_message = item["content"]
+                    touched_urls = set(item.get("touched_urls", []))
+
+                    if dry_run:
+                        posts_would_update += 1
+                        urls_to_delete.update(touched_urls)
+                        result = "dry_run"
+                    else:
+                        if client.update_post(pid, new_message):
+                            urls_to_delete.update(touched_urls)
+                            posts_updated += 1
+                            result = "success"
+                        else:
+                            urls_to_keep.update(touched_urls)
+                            posts_errors.add(pid)
+                            result = "fail"
+                        time.sleep(1)  # Throttle API requests
+
+                    updates_output.writerow([pid, result, new_message])
+                    bar()
+
+    return posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors
+
+
 def update_posts(context: Namespace, legacy: bool = False) -> None:
     """Update posts given by `posts.csv` output from last `download` run"""
-    test_run = context.test_run
-    client = context.api_client
+    dry_run = context.dry_run
     old_prefix = context.config.old_url
     thumb_prefix = context.config.old_url_thumb
     new_prefix = context.config.new_url
@@ -712,94 +874,65 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
     # If new_urls don't work, abort
     if not check_new_urls(context, files):
         return
-        
-    # Track only the urls we actually touched (replaced/de-linked), so we don't
-    # accidentally propose deleting skipped/untouched files.
-    urls_to_delete: set[str] = set()  # urls safe (or would be safe) to delete
-    urls_to_keep: set[str] = set()    # urls not safe to delete
-    
+ 
+    # Initialize these in case we get an exception in the 'try' block below
+    urls_to_delete: set[str] = set()
+    urls_to_keep: set[str] = set()
+    posts_errors: set[str] = set()
     posts_updated = 0
     posts_would_update = 0
-    posts_errors = set()
-    count = max(0, linecount(posts_path) - 1)
-    with alive_bar(count, title="Update posts") as bar:
-        
-        with updates_output_path.open("w", newline="") as f:
-            fieldnames = ["pid", "result", "content"]
-            updates_output = csv.writer(f)
-            updates_output.writerow(fieldnames)
+    posts_errors: set[str] = set()
+    plan_path: Path | None = None
+
+    try:
+        plan_path, sample_pids, urls_touched = build_update_plan(
+            posts_path=posts_path,
+            files=files,
+            legacy=legacy,
+            new_url_func=new_url_func,
+        )
+
+        # Final interactive confirmation in APPLY mode (remote changes).
+        total_posts = max(0, linecount(posts_path) - 1)
+        posts_to_update = max(0, linecount(plan_path) - 1)
+        if not dry_run and posts_to_update and not getattr(context.args, "yes", False):
+            action = "update legacy links in posts" if legacy else "update posts"
             
-            for row in read_csv(posts_path):
-                pid = row["pid"]
-                image_urls = literal_eval(row["image_urls"])
-                new_message = row["message"]
-                touched_urls: set[str] = set()
-                for url in image_urls:
-                    file = files[url]
-                    
-                    # Updating legacy link
-                    if legacy:
-                        if file.get("new_url"):
-                            new_message = new_message.replace(url, file["new_url"])
-                            touched_urls.add(url)
-                        continue
-                    
-                    # De-link missing file (discovered during download)
-                    if file["result"] is File.error:
-                        new_message = remove_bad_url(new_message, url)
-                        touched_urls.add(url)
-                        continue
-                    
-                    # Skip files that were skipped during download
-                    if file["result"] is File.skipped:
-                        continue
-                    
-                    # Replace file url with new url
-                    new_url = new_url_func(url)
-                    new_message = new_message.replace(url, new_url)
-                    
-                    touched_urls.add(url)
-                    
-                    # Full image links often accompany thumb images
-                    if "/thumb/" in url:
-                        full_url = url.replace("thumb/", "")
-                        if full_url in files:
-                            new_full_url = new_url_func(full_url)
-                            new_message = new_message.replace(full_url, new_full_url)
-                            touched_urls.add(full_url)
-                    
-                    # Toolbox sometimes uses a special "/file?id=" link
-                    if file["url_file"]:
-                        new_full_url = new_url_func(file["url"])
-                        new_message = new_message.replace(file["url_file"], new_full_url)
-                        touched_urls.add(file["url"])
-                
-                if new_message == row["message"]:
-                    # No changes
-                    bar()
-                    continue
-                
-                if test_run:
-                    # Dry-run: record what would happen, but do not modify remote state.
-                    posts_would_update += 1
-                    urls_to_delete.update(touched_urls)
-                    result = "dry_run"
-                else:
-                    if client.update_post(pid, new_message):
-                        urls_to_delete.update(touched_urls)
-                        posts_updated += 1
-                        result = "success"
-                    else:
-                        urls_to_keep.update(touched_urls)
-                        posts_errors.add(pid)
-                        result = "fail"
-                
-                updates_output.writerow([pid, result, new_message])
-                
-                if not test_run:
-                    time.sleep(1)  # Throttle API requests
-                
-                bar()
+            print("---- APPLY MODE: REMOTE CHANGES ----")
+            print(f"About to {action} via the Toolbox API (remote changes).")
+            print(f"Input posts: {posts_path}")
+            print(f"Input files: {files_path}")
+            print(f"Will write: {updates_output_path} (OVERWRITES)")
+            print(f"Will write: {deletes_output_path} (OVERWRITES)")
+            
+            print("URL rewrite:")
+            print(f"  old: {old_prefix}")
+            print(f"  new: {new_prefix}")
+            
+            print("Preflight:")
+            print(f"  posts to update: {posts_to_update} of {total_posts}")
+            if sample_pids:
+                print(f"  sample pids: {', '.join(sample_pids)}")
+            print(f"  unique URLs touched: {len(urls_touched)}")
+
+            if not legacy:
+                est_fileids = len({files[url]["fileid"] for url in urls_touched if url in files})
+                print(f"  estimated delete candidates (fileids): {est_fileids}")
+
+            if not confirm(context, "Type UPDATE to confirm: ", "UPDATE"):
+                return
+
+        # Apply (or simulate) the plan, streaming from disk and writing updates.csv results.
+        posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors = apply_update_plan(
+            context=context, plan_path=plan_path,
+        )
+
+    finally:
+        if plan_path is not None:
+            try:
+                plan_path.unlink()
+            except FileNotFoundError:
+                pass
     
     # Adjusting list of images that are now safe to delete.
     #
@@ -810,7 +943,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
     files_to_delete = [files[url] for url in urls_to_delete_final if url in files]
     fileids_to_delete = {file["fileid"] for file in files_to_delete}
     
-    if test_run or legacy:
+    if dry_run or legacy:
         deletes_output_path.write_text(json.dumps([]))
         context.path.fileids_to_delete_dry_run.write_text(json.dumps(sorted(fileids_to_delete)))
     else:
@@ -821,14 +954,14 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
         for pid in posts_errors:
             print(" ", pid)
     
-    if test_run:
+    if dry_run:
         print(f"Update posts: would update {posts_would_update} posts (dry-run)")
         print(f"Dry-run delete candidates written to: {context.path.fileids_to_delete_dry_run}")
     else:
         print(f"Update posts: {posts_updated} updated")
     
     # If old_urls still exist, warn the user (only relevant after a real update).
-    if not test_run and not legacy:
+    if not dry_run and not legacy:
         if not check_old_urls(context, files_to_delete):
             print("! WARNING: At least one old_url or fileid was found in the posts")
             # raise an exception so it's obvious something is amiss
@@ -844,12 +977,12 @@ def delete_files(context: Namespace) -> None:
     This of course won't work with files not hosted by Toolbox so it will
     throw an error if an attempt to made to do that.
     """
-    test_run = context.test_run
+    dry_run = context.dry_run
     client = context.admin_client
     deletes_path = context.path.fileids_to_delete
     fileids_to_delete = json.loads(deletes_path.read_text())
     
-    if test_run:
+    if dry_run:
         print("---- Dry Run: would delete the following fileids (no changes made) ----")
         if not fileids_to_delete:
             print("(none)")
@@ -861,21 +994,16 @@ def delete_files(context: Namespace) -> None:
     if not fileids_to_delete:
         print("Delete files: no fileids listed; nothing to do.")
         return
-    
-    # A final interactive confirmation helps avoid catastrophic deletes.
+
     if not getattr(context.args, "yes", False):
         preview = ", ".join(str(x) for x in fileids_to_delete[:10])
         more = "" if len(fileids_to_delete) <= 10 else f"... (+{len(fileids_to_delete) - 10} more)"
         print(f"About to permanently delete {len(fileids_to_delete)} files from Toolbox.")
         print(f"First 10 fileids: {preview} {more}")
-        try:
-            typed = input("Type DELETE to confirm: ").strip()
-        except EOFError:
-            print("No confirmation received (EOF). Aborting.")
-            return
-        if typed != "DELETE":
-            print("Confirmation not received. Aborting.")
-            return
+    
+    # A final interactive confirmation helps avoid catastrophic deletes.
+    if not confirm(context, "Type DELETE to confirm: ", "DELETE"):
+        return
     
     successes: list = []
     count = len(fileids_to_delete)
@@ -901,7 +1029,7 @@ def check_new_urls(context: Namespace, files: dict) -> bool:
     
     This is checked before 'update_posts'.
     """
-    test_run = context.test_run
+    dry_run = context.dry_run
     old_prefix = context.config.old_url
     thumb_prefix = context.config.old_url_thumb
     new_prefix = context.config.new_url
@@ -914,11 +1042,11 @@ def check_new_urls(context: Namespace, files: dict) -> bool:
     
     # The proxy we're using throttles at 2500 req per 10 min.
     # Make this sleep interval an environment setting?
-    sleep = .001 if test_run else .25
+    sleep = .001 if dry_run else .25
     
     # If new_url is a local path then generate a local 'file://' url.
-    # This only works in TEST_RUN since real post updates need public urls.
-    if test_run and not new_prefix.lower().startswith(("https://", "http://")):
+    # This only works in DRY_RUN since real post updates need public urls.
+    if dry_run and not new_prefix.lower().startswith(("https://", "http://")):
         new_prefix = f"file://{str(Path(new_prefix).resolve())}/"
     
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
@@ -1219,6 +1347,7 @@ def friendly_size(size: int) -> str:
     return f"{int(s)} {unit}"
 
 
+@cache
 def linecount(path: Path) -> int:
     """A quick way to count lines in a file. Defaults to 0 if file not found."""
     if not path.is_file():
@@ -1283,6 +1412,21 @@ def rotate_output_archive(context: Namespace, count: int = 10) -> None:
                 shutil.rmtree(path)
 
 
+def confirm(context: Namespace, prompt: str, token: str) -> bool:
+    """Require an interactive confirmation unless --yes was provided."""
+    if getattr(context.args, "yes", False):
+        return True
+    try:
+        typed = input(prompt).strip()
+    except EOFError:
+        print("No confirmation received (EOF). Aborting.")
+        return False
+    if typed != token:
+        print("Confirmation not received. Aborting.")
+        return False
+    return True
+
+
 def log(context: Namespace, text: str | None = None) -> None:
     """Write text to log file. Defaults to just logging the current command."""
     now = datetime.now().isoformat(sep=" ")
@@ -1345,18 +1489,14 @@ class BaseClient:
     def __init__(self, context: Namespace):
         self.context = context
         self.session = context.session
-    
-    @property
-    def dry_run(self) -> bool:
-        """True when the script must not perform destructive remote actions."""
-        return bool(getattr(self.context, "test_run", False))
-    
+        self.dry_run = context.dry_run
+        
     def _require_apply(self, action: str) -> None:
         """Refuse to run destructive operations unless explicitly applied."""
         if self.dry_run:
             raise RuntimeError(
                 f"Refusing destructive action in dry-run: {action}. "
-                "Re-run with --apply (or set TOOLBOX_TEST_RUN=false) to execute." 
+                "Re-run with --apply (or set TOOLBOX_DRY_RUN=false) to execute." 
             )
 
 
@@ -1448,7 +1588,6 @@ class APIClient(BaseClient):
         Once this condition is reached, call 'close()' on the iterator returned
         by this generator and continue to next iteration which will end it.
         """
-        test_run = self.context.test_run
         params = {"limit": 100, "page": 1}
         get = self.session.get
         url = self.posts_endpoint
@@ -1471,7 +1610,7 @@ class APIClient(BaseClient):
             
             # Each request counts as a page view
             # so just do 3 requests (300 posts) during test runs
-            if test_run and params["page"] > 2:
+            if self.dry_run and params["page"] > 2:
                 return
     
     def update_post(self, pid: str, message: str):
