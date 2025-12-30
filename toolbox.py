@@ -60,6 +60,7 @@ def modes() -> dict[str, Callable[[Namespace], None]]:
         "update_posts": mode_update_posts,
         "delete_files": mode_delete_files,
         "update_legacy_links": mode_update_legacy_links,
+        "check_urls_in_old_folder": check_urls_in_old_folder,
     }
 
 
@@ -358,7 +359,6 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
     The most recent posts are returned first so once we reach a post that we've
     previously processed (via the content export processing), we can skip the rest.
     """
-    dry_run = context.dry_run
     client = context.api_client
     old_url = context.config.old_url
     old_url_thumb = context.config.old_url_thumb
@@ -400,7 +400,7 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
                     posts_output.writerow([pid, date, image_urls, message])
                     bar()
                     
-                if stop or (dry_run and page_count > 3):
+                if stop or (context.dry_run and page_count > 3):
                     break
     
     print(f"From api: Processed {count} posts; Found {found} with image links")
@@ -539,13 +539,12 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
 
 def download_files(context: Namespace, files: dict) -> dict:
     """Download files to be moved to the new image host"""
-    dry_run = context.dry_run
     download_dir = context.path.download_dir
     download = context.downloader.download
     
     def download_file(url, path):
         """Download a single file"""
-        path_old = download_dir / path
+        path_old = download_dir / "_old_" / path
         path_new = download_dir / "_new_" / path
         
         if path_old.exists():
@@ -591,7 +590,7 @@ def download_files(context: Namespace, files: dict) -> dict:
             
             bar(1)
             
-            if dry_run and downloaded > 11:
+            if context.dry_run and downloaded > 11:
                 skipped = len(files) - len(errors) - downloaded
                 break
 
@@ -800,7 +799,6 @@ def apply_update_plan(*, context: Namespace, plan_path: Path) -> tuple[int, int,
     Returns:
         (posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors)
     """
-    dry_run = context.dry_run
     client = context.api_client
     updates_output_path = context.path.updates
     
@@ -829,7 +827,7 @@ def apply_update_plan(*, context: Namespace, plan_path: Path) -> tuple[int, int,
                     new_message = item["content"]
                     touched_urls = set(item.get("touched_urls", []))
 
-                    if dry_run:
+                    if context.dry_run:
                         posts_would_update += 1
                         urls_to_delete.update(touched_urls)
                         result = "dry_run"
@@ -979,12 +977,11 @@ def delete_files(context: Namespace) -> None:
     This of course won't work with files not hosted by Toolbox so it will
     throw an error if an attempt to made to do that.
     """
-    dry_run = context.dry_run
     client = context.admin_client
     deletes_path = context.path.fileids_to_delete
     fileids_to_delete = json.loads(deletes_path.read_text())
     
-    if dry_run:
+    if context.dry_run:
         print("---- Dry Run: would delete the following fileids (no changes made) ----")
         if not fileids_to_delete:
             print("(none)")
@@ -1085,6 +1082,106 @@ def check_new_urls(context: Namespace, files: dict) -> bool:
         print("Check new urls: Passed; All images are accessible at new urls")
     
     return not images_errors
+
+
+def check_urls_in_old_folder(context: Namespace) -> None:
+    """This function is just a helpful diagnostic to confirm that all images
+    in the '{context.path.download_dir}/_old_/' folder can be found in the new
+    image host location.
+
+    Assumption: the relative paths under '_old_/' already match the path portion expected
+    under the new host prefix (context.config.new_url).
+
+    Any that are not found are copied to '{context.path.download_dir}/_notfound_/'
+    so they can be inspected manually.
+    
+    There is no CLI mode that invokes this function. It's meant to be invoked
+    manually via a console session like so:
+
+    """
+    download_dir = Path(context.path.download_dir)
+    old_dir = download_dir / "_old_"
+    notfound_dir = download_dir / "_notfound_"
+    url_ok = context.url_ok
+
+    if not old_dir.exists():
+        print(f"Check urls in old folder: '{old_dir}' not found; nothing to do")
+        return
+
+    # The proxy we're using throttles at 2500 req per 10 min.
+    # Make this sleep interval an environment setting?
+    sleep = .25
+
+    # Normalize new_url prefix
+    new_prefix = str(context.config.new_url)
+    if not new_prefix.endswith("/"):
+        new_prefix += "/"
+
+    def is_special(path: str) -> bool:
+        return ("#" in path) or ("?" in path)
+
+    def safe_quote(path: str) -> str:
+        # Similar strategy as get_new_url_func() but let's assume the local path
+        # is already unquoted, then check if this is a special case that requires
+        # double quoting.
+        # path = quote(path) if is_special(path) else path
+        # return quote(path)
+        # quoted = quote(path, safe="-._~%")
+        return quote(quote(path))
+
+    # If new_prefix is a proxy URL with query params, filenames may need quoting.
+    fixpath = safe_quote if "?" in new_prefix else (lambda x: x)
+
+    def iter_old_files():
+        for p in old_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(old_dir).as_posix()
+
+            # Skip hidden/housekeeping paths under _old_
+            if rel.startswith(".") or "/." in rel:
+                continue
+            if rel.split("/", 1)[0].startswith("_"):
+                continue
+
+            yield p, rel
+
+    # Pre-count without holding all paths in memory
+    total = sum(1 for _ in iter_old_files())
+    if total == 0:
+        print(f"Check urls in old folder: No files under {old_dir}")
+        return
+
+    missing = 0
+    checked = 0
+    first_few_missing: list[str] = []
+
+    with alive_bar(total, title="Check old downloads at new host") as bar:
+        for src_path, rel in iter_old_files():
+            new_url = new_prefix + fixpath(rel)
+            checked += 1
+
+            if not url_ok(new_url):
+                missing += 1
+                dst = notfound_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst)
+                if len(first_few_missing) < 20:
+                    first_few_missing.append(new_url)
+                
+                breakpoint()
+
+            time.sleep(sleep)
+            bar()
+
+    if missing:
+        print(f"Check urls in old folder: {missing}/{checked} missing; copied to: {notfound_dir}")
+        if first_few_missing:
+            print("First missing urls:")
+            for url in first_few_missing:
+                print(" ", url)
+    else:
+        print(f"Check urls in old folder: Passed; {checked} files found at new host")
 
 
 def grep_urls_in_file(updates_path: Path, urls: list[str]) -> str:
@@ -1498,12 +1595,10 @@ class BaseClient:
     
     def __init__(self, context: Namespace):
         self.context = context
-        self.session = context.session
-        self.dry_run = context.dry_run
         
     def _require_apply(self, action: str) -> None:
         """Refuse to run destructive operations unless explicitly applied."""
-        if self.dry_run:
+        if self.context.dry_run:
             raise RuntimeError(
                 f"Refusing destructive action in dry-run: {action}. "
                 "Re-run with --apply (or set TOOLBOX_DRY_RUN=false) to execute." 
@@ -1513,7 +1608,8 @@ class BaseClient:
 class Downloader(BaseClient):
     
     def download(self, url: str, path: Path) -> int:
-        with self.session.get(url, stream=True, timeout=60) as resp:
+        get = self.context.session.get
+        with get(url, stream=True, timeout=60) as resp:
             if resp.status_code == 200:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("wb") as f:
@@ -1542,15 +1638,17 @@ class AdminClient(BaseClient):
     
     def check_admin_auth(self) -> bool:
         """Check that the Admin cookie in config is valid. If not, return False."""
+        get = self.context.session.get
         url = self.dashboard_endpoint
-        with self.session.get(url, headers=self.headers, timeout=30) as resp:
+        with get(url, headers=self.headers, timeout=30) as resp:
             return resp.ok
     
     @cached_property
     def hidden_defaults(self) -> dict:
         """Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)"""
+        get self.context.session.get
         url = self.files_endpoint
-        with self.session.get(url, headers=self.headers, timeout=30) as resp:
+        with get(url, headers=self.headers, timeout=30) as resp:
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
             form = soup.find("form", {"id": "frmFiles"})
@@ -1562,10 +1660,11 @@ class AdminClient(BaseClient):
     
     def delete_files(self, fileids) -> bool:
         self._require_apply(f"delete_files count={len(fileids)}")
+        post = self.context.session.post
         url = self.delete_endpoint
         defaults = list(self.hidden_defaults.items()) + [("action", "deleteFiles")]
         data = defaults + [("deleteimg", fileid) for fileid in fileids]
-        with self.session.post(url, data=data, headers=self.headers, timeout=30) as resp:
+        with post(url, data=data, headers=self.headers, timeout=30) as resp:
             resp.raise_for_status()
             return resp.ok
 
@@ -1584,9 +1683,10 @@ class APIClient(BaseClient):
     
     def check_api_auth(self) -> bool:
         """Check that the API key/username in config are valid. If not, return False."""
+        get = self.context.session.get
         url = self.posts_endpoint
         params = {"limit": 1}
-        with self.session.get(url, params=params, headers=self.headers, timeout=30) as resp:
+        with get(url, params=params, headers=self.headers, timeout=30) as resp:
             return resp.ok
     
     def list_posts(self):
@@ -1620,15 +1720,16 @@ class APIClient(BaseClient):
             
             # Each request counts as a page view
             # so just do 3 requests (300 posts) during test runs
-            if self.dry_run and params["page"] > 2:
+            if self.context.dry_run and params["page"] > 2:
                 return
     
     def update_post(self, pid: str, message: str):
         """Call the "Update Post" API endpoint to update a post message."""
         self._require_apply(f"update_post pid={pid}")
+        post = self.context.session.post
         url = f"{self.posts_endpoint}/{pid}"
         body = {"content": message}
-        with self.session.post(url, json=body, headers=self.headers, timeout=30) as resp:
+        with post(url, json=body, headers=self.headers, timeout=30) as resp:
             resp.raise_for_status()
             return resp.ok
 
