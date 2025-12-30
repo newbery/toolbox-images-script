@@ -1646,7 +1646,7 @@ class AdminClient(BaseClient):
     @cached_property
     def hidden_defaults(self) -> dict:
         """Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)"""
-        get self.context.session.get
+        get = self.context.session.get
         url = self.files_endpoint
         with get(url, headers=self.headers, timeout=30) as resp:
             resp.raise_for_status()
@@ -1699,7 +1699,7 @@ class APIClient(BaseClient):
         by this generator and continue to next iteration which will end it.
         """
         params = {"limit": 100, "page": 1}
-        get = self.session.get
+        get = self.context.session.get
         url = self.posts_endpoint
         
         with get(url, params=params, headers=self.headers, timeout=30) as resp:

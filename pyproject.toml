@@ -34,7 +34,7 @@ preview = true
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "I", "S"]
-ignore = ["E501", "S101"]
+ignore = ["B903", "E501", "S101"]
 unfixable = ["F401"]
 
 [tool.pyright]
@@ -44,4 +44,3 @@ typeCheckingMode = "basic"
 reportIncompatibleMethodOverride = "warning"
 reportMissingTypeStubs = false
 reportPrivateImportUsage = false
-
