@@ -1,6 +1,8 @@
 
 /.venv
 /.idea
+/.pytest_cache
+/.ruff_cache
 /csv*
 /downloads*
 /images*
