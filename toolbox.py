@@ -1094,10 +1094,6 @@ def check_urls_in_old_folder(context: Namespace) -> None:
 
     Any that are not found are copied to '{context.path.download_dir}/_notfound_/'
     so they can be inspected manually.
-    
-    There is no CLI mode that invokes this function. It's meant to be invoked
-    manually via a console session like so:
-
     """
     download_dir = Path(context.path.download_dir)
     old_dir = download_dir / "_old_"
