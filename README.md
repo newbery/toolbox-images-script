@@ -1,168 +1,192 @@
 
-toolbox.py
-----------
+# Website Toolbox image migration utility
 
-A utility script to move images from posts on a forum hosted with the Website Toolbox service
-(https://www.websitetoolbox.com)
+This project is a small migration utility for forums hosted by
+[Website Toolbox](https://www.websitetoolbox.com/). It downloads images hosted by
+Website Toolbox, rewrites the corresponding image URLs in forum posts, and can
+then delete the migrated images from Website Toolbox storage.
 
-This is a simple one-trick pony. It's only meant to help with a very specific
-case where a forum is hitting the server space limits. This script handles this
-by downloading any Toolbox-hosted images found in post messages and then updating
-the image links within these posts to point to a new image host.
+It is intended for the specific case where a forum is approaching its Website
+Toolbox storage limit. Images/files attached through other Website Toolbox
+features are not handled by this utility; see [Supported images and files](#supported-images-and-files).
 
-The Website Toolbox API documentation is here:  
-https://www.websitetoolbox.com/api/#introduction
-
-Each API request is counted toward the page view usage allotment for the account
-so it's best to take advantage of WS Toolbox's Forum Content Export feature. 
-This script will process the exported `posts.csv` if it's available before attempting
-to collect any remaining posts via the API. A content export is optional but this
-can be considerably faster than collecting all post data from the API and may help
-to avoid chewing through the page view allotment for the forum.
-
-Note that there is no way to optimize the API call needed to update each individual
-post, or the final calls to delete the old images, so these last two steps may still
-generate a lot of page views depending on how many posts are updated.
+The Website Toolbox API documentation is available at
+<https://www.websitetoolbox.com/api/#introduction>.
 
 
-Prerequisites
--------------
+## Why use a forum content export?
 
-This is a Python script with a few third-party libraries as requirements.
-As is usual in such cases, it's strongly recommended to install the requirements
-in a Python virtualenv (or a Docker image). There are several ways to do this but
-I'll just describe my preferred mechanism using Poetry (https://python-poetry.org/)
+Each Website Toolbox API request counts toward the account's page-view usage.
+When available, this utility reads `posts.csv` from Website Toolbox's **Forum
+Content Export** before requesting newer or missing posts through the API. The
+export is optional, but using it can substantially reduce API calls and migration
+time.
 
-First, make sure you have Python 3.11 or greater available on your system.
-If you need to install different versions of Python for any reason, I suggest
-using `pyenv` (https://github.com/pyenv/pyenv)
-
-Not directly related to this script but to install other python scripts with
-dependencies, I generally recommend using `pipx` (https://pypa.github.io/pipx/)
-
-Poetry can be installed using pipx: `pipx install poetry` 
+Note that there appears to be little we can do to optimize the number of API calls
+needed to update each individual post, or the final calls to delete the old images,
+so these last two steps may still generate a lot of page views depending on how
+many posts are updated.
 
 
-Quick Start
------------
+## Requirements
+
+- Python 3.11 or newer
+- Poetry 2.2 or newer
+- The standard Unix utilities used by the migration through Plumbum (`grep`,
+  `cut`, and `wc`)
+
+
+## Quick start
 
 ```bash
-# (1) Clone this repository
+# 1. Clone the repository.
 git clone https://github.com/newbery/toolbox-images-script.git
 cd toolbox-images-script
 
-# (2) Install the virtualenv (with script dependencies)
+# 2. Install the project and activate the virtualenv.
 poetry install
-
-# (3) Activate the virtualenv
 poetry shell
 
-# (4) From the Website Toolbox admin portal, navigate to "Integrate" >> "Export"
-# and download the "Forum Content" (as csv) then unzip the resulting zip file
-# into a subdirectory of this directory (this step is manual and optional)
+# 3. Create local configuration files from the templates.
+cp .env.template .env
+cp .env.secrets.template .env.secrets
 
-# (5) Update the script configuration (see below)
+# 4. Edit .env and .env.secrets for the forum and destination image host.
 
-# (6) Process the posts data and download images.
-./toolbox.py download_files
+# 5. Optional: export Forum Content from the Website Toolbox admin portal
+#    (Integrate -> Export) and place posts.csv in EXPORT_DIR (csv/ by default).
 
-# (7) Copy the downloaded images to the new image host (this step is manual)
+# 6. Exercise the download phase in the default dry-run mode.
+toolbox download_files
 
-# (8) Process the 'download' result and update the posts. This will first
-# run a preflight to check that all the new urls (at the new image host)
-# can be found before updating the posts with the new urls.
-./toolbox.py update_posts
+# 7. Run the complete download phase when ready.
+toolbox --apply download_files
 
-# (9) Delete all the images from the Website Toolbox server which are now hosted
-# at the new image host. To confirm that this has worked as expected, compare the
-# File Storage numbers (Admin portal: "Files" >> "Storage") from before and after
-# running this last step.
-./toolbox.py delete_files
+# 8. Manually copy the downloaded images to the new image host.
 
+# 9. Verify the new URLs and update the forum posts.
+toolbox --apply update_posts
+
+# 10. Delete the successfully migrated images from Website Toolbox storage.
+toolbox --apply delete_files
+```
+
+The same CLI can also be invoked as a module:
+
+```bash
+python -m toolbox --help
+```
+
+Run `toolbox --help` for the complete list of modes and safety flags.
+
+
+## Safety model
+
+Dry-run is the default. Unless explicitly overridden, the utility prevents
+remote updates and deletes and limits some collection/download operations to
+make test runs manageable.
+
+Use `--apply` to perform a full migration operation. Use `--dry-run` to force the
+safe mode even if configuration says otherwise. Destructive operations also have
+additional confirmation and client-layer guards; `--yes` skips interactive
+confirmation when intentionally automating an apply run.
+
+The precedence is:
+
+1. explicit `--apply` or `--dry-run` CLI flag;
+2. `DRY_RUN` from `.env`, `.env.secrets`, or the environment;
+3. dry-run if no setting is supplied.
+
+## Configuration
+
+The utility reads `.env` and `.env.secrets` from the current working directory.
+Both files should be created from the checked-in templates:
+
+```bash
+cp .env.template .env
+cp .env.secrets.template .env.secrets
+```
+
+`.env` contains ordinary migration settings such as local directories, source
+URLs, destination URL, and age/test controls. `.env.secrets` contains the
+Website Toolbox credentials and should remain untracked.
+
+Any setting can be overridden by an environment variable prefixed with
+`TOOLBOX_`. For example, `TOOLBOX_DRY_RUN=false` overrides `DRY_RUN` from the env
+files.
+
+
+### Authentication settings
+
+`API_KEY` is available in the forum Admin UI under **Integrate -> API**.
+
+`API_USERNAME` should name a Website Toolbox user with administrator privileges.
+
+`ADMIN_COOKIE` is the browser cookie from an authenticated Website Toolbox admin
+session. The utility only needs the relevant authentication cookie values, but
+copying the complete cookie string is acceptable. A minimal value looks like:
+
+```dotenv
+ADMIN_COOKIE="username=aaa; wtsession=123456789abcdefghij; forumuserid=123456"
 ```
 
 
-Configuration
--------------
-
-The script needs a little bit of configuration before it's ready for use.
-It looks for two files in the working directory; `.env` and `.env.secrets`.
-The second file does not exist so you have to create it. Just copy the template
-file `.env.secrets.template` into a new file named `.env.secrets`.
-
-These are "dot" files which in some systems are hidden from the directory
-listing. If you don't see any dot files, just google how to make these
-hidden files visible in your system.
-
-Both files are reasonably documented and mostly self-explanatory but the
-authentication settings in `.env.secrets` may need a little explanation.
-
-The `API_KEY` is found in the forum Admin UI under `Integrate > API`.
-
-The `API_USERNAME` is any username with "administrator" privileges.
-
-The `ADMIN_COOKIE` is just the browser cookie you get when you navigate to
-the forum Admin UI via "https://your-forum-domain/admin". Just copy this
-cookie from whatever settings page your web browser offers for this purpose.
-
-Technically, we don't need the entire cookie for our purposes but feel free
-to copy the entire string as we will just ignore the unneeded bits. The minimum
-cookie values you need are "username", "wtsession", and "forumuserid". The
-full string should look something like this (all on one line):
-
-`ADMIN_COOKIE = "username=aaa; wtsession=123456789abcdefghij; forumuserid=123456"`
+## Main migration modes
 
 
-What does toolbox.py do?
-------------------------
+### `download_files`
 
-The 'download_files' action:
-- checks that the authentication values in `.env` files are valid (if not, abort)
-- archives the results from a previous run (archive contains last 5 results)
-- collects post data from `posts.csv` content export file
-- collects post data from "List Posts" API
-- downloads forum-hosted images from all posts older than 30 days (configurable)
-- generates a final list of images-to-move (from all images successfully downloaded)
-- generates a final list of posts-to-update (excluding posts with problem images)
-
-The 'update_posts' action:
-- checks if all images-to-move are accessible from new host (if not, abort)
-- updates all posts-to-update with updated image links in their messages
-
-The 'delete_files' action
-- deletes all images-to-move from old host
-
-All API requests are throttled to 1 request per second since a 3 reqs/sec limit
-is enforced by the server. If a lot of posts need to be updated, this can take
-a while. You can marvel at the progress bars as you wait, or go get some coffee.
+- checks the configured API/admin authentication;
+- collects posts from `EXPORT_DIR/posts.csv` when available;
+- collects remaining posts through the Website Toolbox API;
+- downloads Website Toolbox-hosted images from eligible posts;
+- writes the resulting image/file data and the post-update inputs.
 
 
-Supported images / files
-------------------------
+### `update_posts`
 
-Only those forum-hosted images linked directly from within post message text
-are managed with this script. This is most of the images in the forum for which
-this script is written so that's good enough for our purposes.
-
-The following images and files are NOT currently managed:
-- images/files included in posts as "attachments"
-- private message images/files
-- album images/files
-- event images/files
-- profile picture
-- profile avatar
+- checks that the migrated image URLs are reachable at the new host;
+- builds/uses the update plan;
+- updates eligible post messages with the new image URLs in apply mode.
 
 
-Caveats
--------
+### `delete_files`
 
-Miscellaneous notes about issues encountered with this script.
+- uses the successful migration results to identify old Website Toolbox files;
+- deletes those files only in apply mode and subject to the command's safety
+  checks.
 
-- There were a couple of edge cases where images were linked directly to the backend
-url instead of to the Cloudfront CDN. I discovered this late during manual inspection
-of the results. Since this was just a handful of posts, it was easier to fix these
-by manually downloading the images and manually updating the posts. It's probably
-not worth fixing the script to account for these edge cases. If starting a migration
-from scratch, maybe do these corrections first. Search for the offending links
-in the content export csv ("https://s3.amazonaws.com/files.websitetoolbox.com/...)"
+Additional diagnostic/legacy modes are exposed by `toolbox --help`.
 
+API requests are intentionally throttled because Website Toolbox enforces request
+limits and counts API requests against page-view usage.
+
+
+## Supported images and files
+
+Only Website Toolbox-hosted images linked directly from forum post message text
+are managed by the primary migration workflow.
+
+The following are not currently handled by this utility:
+
+- images/files included as post attachments;
+- private-message images/files;
+- album images/files;
+- event images/files;
+- profile pictures;
+- profile avatars.
+
+
+## Caveats
+
+A small number of images in the original forum were linked directly to the
+Website Toolbox backend instead of through the CloudFront CDN. Those cases were
+originally handled manually because there were too few to justify expanding the
+migration logic. For a new migration, consider searching the content export for
+URLs such as:
+
+```text
+https://s3.amazonaws.com/files.websitetoolbox.com/...
+```
+
+and deciding whether to correct those exceptional posts before the main run.

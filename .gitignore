@@ -1,20 +1,30 @@
+# Some of these are ignored already by global gitignores
 
+# Python
+__pycache__/
+*.py[cod]
+
+# virtual environments / tool state
 /.venv
 /.idea
 /.pytest_cache
 /.ruff_cache
-/csv*
-/downloads*
-/images*
-/output*
-/_*
-
+/.coverage
 .env
 .envrc
 .env.secrets
 .python-version
 poetry.lock
 
-# Don't ignore the template file
+# Ignore working input/output directories
+/csv*
+/downloads*
+/images*
+/output*
+
+# Ignore my dev stash directories
+/_*
+
+# Don't ignore the templates
 !.env.template
 !.env.secrets.template

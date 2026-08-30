@@ -1,31 +1,42 @@
-[tool.poetry]
+[project]
 name = "toolbox-images-script"
 version = "0.2.0"
 description = "A utility to relocate images from a Website Toolbox forum"
-authors = ["Ricardo Newbery <ric@digitalmarbles.com>"]
-license = "MIT"
 readme = "README.md"
+requires-python = ">=3.11, <4.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ricardo Newbery", email = "ric@digitalmarbles.com" }]
+dependencies = [
+    "requests>=2.28.1,<3.0.0",
+    "alive-progress>=3.3.0,<4.0.0",
+    "python-dotenv>=1.2.1,<2.0.0",
+    "beautifulsoup4>=4.11.1,<5.0.0",
+    "requests-file>=3.0.1,<4.0.0",
+    "plumbum>=1.8.0,<2.0.0",
+]
 
+[project.scripts]
+toolbox = "toolbox.toolbox:main"
 
-[tool.poetry.dependencies]
-python = "^3.11"
-requests = "^2.28.1"
-alive-progress = "^3.3.0"
-python-dotenv = "^1.2.1"
-beautifulsoup4 = "^4.11.1"
-requests-file = "^3.0.1"
-plumbum = "^1.8.0"
+[project.urls]
+Repository = "https://github.com/newbery/toolbox-images-script"
 
-ruff = "*"
-pyright = "*"
-pdbpp = "*"
-pytest = "*"
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "ruff>=0.16.0,<0.17.0",
+    "pyright>=1.1.0,<2.0.0",
+    "pdbpp>=0.11.0,<1.0.0",
+]
 
+[tool.poetry]
+requires-poetry = ">=2.2.0"
+packages = [{ include = "toolbox", from = "src" }]
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.2.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
-
 
 [tool.ruff]
 line-length = 100
@@ -44,3 +55,7 @@ typeCheckingMode = "basic"
 reportIncompatibleMethodOverride = "warning"
 reportMissingTypeStubs = false
 reportPrivateImportUsage = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

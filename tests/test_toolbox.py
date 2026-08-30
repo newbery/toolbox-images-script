@@ -1,7 +1,5 @@
-
 import csv
 import json
-import sys
 from argparse import Namespace
 from datetime import datetime as real_datetime
 from datetime import timezone
@@ -9,34 +7,12 @@ from pathlib import Path
 
 import pytest
 
-
-def _import_toolbox():
-    """Import toolbox, falling back to loading ../toolbox.py if needed."""
-    try:
-        import toolbox  # type: ignore
-        return toolbox
-    except Exception:
-        # Fallback: load toolbox.py next to project root
-        import importlib.util
-
-        here = Path(__file__).resolve()
-        root = here.parents[1] if len(here.parents) > 1 else here.parent
-        toolbox_path = root / "toolbox.py"
-        if not toolbox_path.exists():
-            raise
-        spec = importlib.util.spec_from_file_location("toolbox", toolbox_path)
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules["toolbox"] = mod
-        spec.loader.exec_module(mod)
-        return mod
-
-
-toolbox = _import_toolbox()
+from toolbox import toolbox
 
 
 class DummyAliveBar:
     """Replacement for alive_progress.alive_bar used in unit tests."""
+
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
@@ -45,6 +21,7 @@ class DummyAliveBar:
     def __enter__(self):
         def bar(n=1):
             self.calls.append(n)
+
         return bar
 
     def __exit__(self, exc_type, exc, tb):
@@ -80,7 +57,9 @@ def context_tmp(tmp_path) -> Namespace:
 
     context = Namespace(config=cfg)
     context.path = toolbox.paths(cfg)
-    context.args = Namespace(mode="download_files", verbose=False, apply=False, dry_run=True, yes=True)
+    context.args = Namespace(
+        mode="download_files", verbose=False, apply=False, dry_run=True, yes=True
+    )
 
     # Most unit tests run in dry-run mode by default.
     context.dry_run = True
@@ -92,6 +71,7 @@ def context_tmp(tmp_path) -> Namespace:
 # Small, pure helper tests
 # -------------------------
 
+
 def test_batched_basic():
     """The `batched` function should yield consecutive lists of length n,
     preserving order, with a final shorter batch if needed.
@@ -102,7 +82,7 @@ def test_batched_basic():
 def test_batched_n_lt_1():
     """The `batched` function should treat non-positive n as a request for
     a single empty batch.
-    
+
     This matches the current implementation contract. Do I care?
     """
     assert list(toolbox.batched([1, 2], 0)) == [[]]
@@ -125,7 +105,7 @@ def test_find_urls_func_filters_and_sorts():
     """
     find_urls = toolbox.find_urls_func("https://old.example.com/")
     html = (
-        '<p>'
+        "<p>"
         '<img src="https://old.example.com/a.jpg"/>'
         '<img src="https://old.example.com/b.jpg"/>'
         '<img src="https://other.example.com/c.jpg"/>'
@@ -214,7 +194,7 @@ def test_get_new_url_func_handles_param_quote_unquote():
         thumb_prefix="",
         new_prefix="https://new.example.com/?url=",
     )
-    
+
     # '#' should remain quoted so it doesn't become a fragment
     out = f("https://old.example.com/a#b.jpg")
     assert out.startswith("https://new.example.com/?url=")
@@ -233,6 +213,7 @@ def test_get_new_url_func_handles_param_quote_unquote():
 # -------------------------
 # IO helpers
 # -------------------------
+
 
 def test_read_csv_missing_yields_nothing(tmp_path):
     """The `read_csv` function should be tolerant of missing files and
@@ -279,7 +260,9 @@ def test_rotate_output_archive_rotates_and_prunes(tmp_path, monkeypatch):
     for d in (export_dir, download_dir, output_dir):
         d.mkdir()
 
-    cfg = Namespace(export_dir=str(export_dir), download_dir=str(download_dir), output_dir=str(output_dir))
+    cfg = Namespace(
+        export_dir=str(export_dir), download_dir=str(download_dir), output_dir=str(output_dir)
+    )
     context = Namespace(config=cfg)
     context.path = toolbox.paths(cfg)
 
@@ -315,6 +298,7 @@ def test_log_writes_line(context_tmp, monkeypatch):
     """The `log` function should append a timestamped line containing the
     provided message to the run's log file.
     """
+
     class FixedDateTime:
         @classmethod
         def now(cls):
@@ -378,6 +362,7 @@ def test_paths_builds_expected_paths(tmp_path):
 # Core pipeline function tests (mocking clients)
 # -------------------------
 
+
 def test_posts_from_export_collects_urls(context_tmp):
     """The `posts_from_export` function should parse the export posts csv,
     extract image urls, and write a normalized `posts_from_export` csv with
@@ -388,7 +373,7 @@ def test_posts_from_export_collects_urls(context_tmp):
     posts_csv = context_tmp.path.export_dir / "posts.csv"
     posts_csv.write_text(
         "pid,date,message\n"
-        "1,100,<p><img src=\"https://old.example.com/123/a.jpg\"/></p>\n"
+        '1,100,<p><img src="https://old.example.com/123/a.jpg"/></p>\n'
         "2,101,<p>no image</p>\n",
         encoding="utf-8",
     )
@@ -429,7 +414,15 @@ def test_posts_from_api_stops_when_pid_already_seen(context_tmp):
     # Existing post from export already processed
     posts = {"1": {"date": "100", "image_urls": []}}
     pages = [
-        {"data": [{"postId": 2, "postTimestamp": "200", "message": '<img src="https://old.example.com/2.jpg"/>'}]},
+        {
+            "data": [
+                {
+                    "postId": 2,
+                    "postTimestamp": "200",
+                    "message": '<img src="https://old.example.com/2.jpg"/>',
+                }
+            ]
+        },
         {"data": [{"postId": 1, "postTimestamp": "199", "message": "stop here"}]},
         {"data": [{"postId": 3, "postTimestamp": "198", "message": "should not be reached"}]},
     ]
@@ -520,9 +513,30 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
     context_tmp.downloader = FakeDownloader()
 
     files = {
-        "1": {"url": "https://x/1.jpg", "url_thumb": "", "url_file": "", "path": "1.jpg", "pids": {"p1"}, "result": toolbox.File.default},
-        "2": {"url": "https://x/2.jpg", "url_thumb": "https://x/t2.jpg", "url_file": "", "path": "2.jpg", "pids": {"p2"}, "result": toolbox.File.default},
-        "3": {"url": "https://x/3.jpg", "url_thumb": "", "url_file": "", "path": "3.jpg", "pids": {"p3"}, "result": toolbox.File.skipped},
+        "1": {
+            "url": "https://x/1.jpg",
+            "url_thumb": "",
+            "url_file": "",
+            "path": "1.jpg",
+            "pids": {"p1"},
+            "result": toolbox.File.default,
+        },
+        "2": {
+            "url": "https://x/2.jpg",
+            "url_thumb": "https://x/t2.jpg",
+            "url_file": "",
+            "path": "2.jpg",
+            "pids": {"p2"},
+            "result": toolbox.File.default,
+        },
+        "3": {
+            "url": "https://x/3.jpg",
+            "url_thumb": "",
+            "url_file": "",
+            "path": "3.jpg",
+            "pids": {"p3"},
+            "result": toolbox.File.skipped,
+        },
     }
 
     # Make download fail for one file
@@ -561,14 +575,24 @@ def test_summarize_writes_posts_and_files(context_tmp):
         ["pid", "date", "image_urls", "message"],
         [
             ["1", "0", "[]", "<p>no</p>"],
-            ["2", "0", "['https://old.example.com/123/a.jpg']", "<img src='https://old.example.com/123/a.jpg'/>"],
+            [
+                "2",
+                "0",
+                "['https://old.example.com/123/a.jpg']",
+                "<img src='https://old.example.com/123/a.jpg'/>",
+            ],
         ],
     )
     _write_csv(
         context_tmp.path.posts_from_api,
         ["pid", "date", "image_urls", "message"],
         [
-            ["3", "0", "['https://old.example.com/123/a.jpg']", "<img src='https://old.example.com/123/a.jpg'/>"],
+            [
+                "3",
+                "0",
+                "['https://old.example.com/123/a.jpg']",
+                "<img src='https://old.example.com/123/a.jpg'/>",
+            ],
         ],
     )
 
@@ -715,9 +739,19 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
         context_tmp.path.posts,
         ["pid", "date", "image_urls", "message"],
         [
-            ["1", "0", "['https://old.example.com/123/a.jpg', 'https://old.example.com/thumb/123/a.jpg']", msg],
+            [
+                "1",
+                "0",
+                "['https://old.example.com/123/a.jpg', 'https://old.example.com/thumb/123/a.jpg']",
+                msg,
+            ],
             # This one should be unchanged (skipped file)
-            ["2", "0", "['https://old.example.com/555/a.jpg']", "<img src='https://old.example.com/555/a.jpg'/>"],
+            [
+                "2",
+                "0",
+                "['https://old.example.com/555/a.jpg']",
+                "<img src='https://old.example.com/555/a.jpg'/>",
+            ],
         ],
     )
 
@@ -726,8 +760,24 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
         context_tmp.path.files,
         ["fileid", "pids", "url", "url_thumb", "url_file", "new_url", "result"],
         [
-            ["123", "{\'1\'}", "https://old.example.com/123/a.jpg", "https://old.example.com/thumb/123/a.jpg", "/file?id=123", "", str(toolbox.File.downloaded.value)],
-            ["555", "{'2'}", "https://old.example.com/555/a.jpg", "", "", "", str(toolbox.File.skipped.value)],
+            [
+                "123",
+                "{'1'}",
+                "https://old.example.com/123/a.jpg",
+                "https://old.example.com/thumb/123/a.jpg",
+                "/file?id=123",
+                "",
+                str(toolbox.File.downloaded.value),
+            ],
+            [
+                "555",
+                "{'2'}",
+                "https://old.example.com/555/a.jpg",
+                "",
+                "",
+                "",
+                str(toolbox.File.skipped.value),
+            ],
         ],
     )
 
@@ -750,7 +800,7 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
     assert row1["result"] == "dry_run"
     assert "https://new.example.com/123/a.jpg" in row1["content"]
     assert "https://new.example.com/thumb/123/a.jpg" in row1["content"]
-    
+
     # /file?id link replaced with full url
     assert "/file?id=123" not in row1["content"]
 
@@ -766,7 +816,9 @@ def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
     """The `delete_files` function should load `fileids_to_delete.json` and invoke
     the admin client's `delete_files` in batches of 100 fileids.
     """
-    context_tmp.path.fileids_to_delete.write_text(json.dumps([str(i) for i in range(1, 205)]), encoding="utf-8")
+    context_tmp.path.fileids_to_delete.write_text(
+        json.dumps([str(i) for i in range(1, 205)]), encoding="utf-8"
+    )
     monkeypatch.setattr(toolbox.time, "sleep", lambda *_a, **_k: None)
 
     calls = []
@@ -796,6 +848,7 @@ def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
 # -------------------------
 # CLI wrappers
 # -------------------------
+
 
 def test_parse_args_parses_mode_and_verbose(monkeypatch):
     """The `parse_args` function should accept a valid mode, set args.mode,
@@ -883,6 +936,7 @@ def test_init_clients_configures_session_clients_and_url_ok(monkeypatch):
     set User-Agent, attach client helpers, and expose the `url_ok` function
     that accepts 200/206 and rejects other status codes.
     """
+
     class FakeResp:
         def __init__(self, code):
             self.status_code = code
@@ -916,8 +970,12 @@ def test_init_clients_configures_session_clients_and_url_ok(monkeypatch):
     api_obj, admin_obj, dl_obj = object(), object(), object()
     created = {"api": None, "admin": None, "dl": None}
 
-    monkeypatch.setattr(toolbox, "APIClient", lambda ctx: created.__setitem__("api", ctx) or api_obj)
-    monkeypatch.setattr(toolbox, "AdminClient", lambda ctx: created.__setitem__("admin", ctx) or admin_obj)
+    monkeypatch.setattr(
+        toolbox, "APIClient", lambda ctx: created.__setitem__("api", ctx) or api_obj
+    )
+    monkeypatch.setattr(
+        toolbox, "AdminClient", lambda ctx: created.__setitem__("admin", ctx) or admin_obj
+    )
     monkeypatch.setattr(toolbox, "Downloader", lambda ctx: created.__setitem__("dl", ctx) or dl_obj)
 
     ctx = Namespace()
@@ -948,6 +1006,7 @@ def test_init_clients_creates_session_when_none(monkeypatch):
     """The `init_clients` function should create a `requests.Session` when session
     is None and store it on `context.session`.
     """
+
     class FakeSession:
         def __init__(self):
             self.mounted = []
@@ -960,8 +1019,12 @@ def test_init_clients_creates_session_when_none(monkeypatch):
             class R:
                 status_code = 200
 
-                def __enter__(self): return self
-                def __exit__(self, *a): return False
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
             return R()
 
     monkeypatch.setattr(toolbox.requests, "Session", FakeSession)
@@ -996,8 +1059,11 @@ def test_main_parses_initializes_and_dispatches_mode(monkeypatch):
         return ctx_obj
 
     class FakeSess:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     def fake_init_clients(context, session):
         called["init"] += 1
@@ -1025,13 +1091,15 @@ def test_main_parses_initializes_and_dispatches_mode(monkeypatch):
 # CLI modes
 # -------------------------
 
+
 def test_mode_download_files_auth_gate(context_tmp, capsys):
     """The `mode_download_files` function should refuse to proceed when api
     authentication/health checks fail and emit a user-visible message.
     """
 
     class FakeApi:
-        def check_api_auth(self): return False
+        def check_api_auth(self):
+            return False
 
     context_tmp.api_client = FakeApi()
 
@@ -1048,16 +1116,25 @@ def test_mode_download_files_happy_path_calls_pipeline(context_tmp, monkeypatch)
     """
 
     class FakeApi:
-        def check_api_auth(self): return True
+        def check_api_auth(self):
+            return True
 
     context_tmp.api_client = FakeApi()
 
     calls = []
     monkeypatch.setattr(toolbox, "log", lambda args: calls.append("log"))
-    monkeypatch.setattr(toolbox, "posts_from_export", lambda args: calls.append("export") or {"1": {"date": "0", "image_urls": []}})
+    monkeypatch.setattr(
+        toolbox,
+        "posts_from_export",
+        lambda args: calls.append("export") or {"1": {"date": "0", "image_urls": []}},
+    )
     monkeypatch.setattr(toolbox, "posts_from_api", lambda args, posts: calls.append("api") or posts)
-    monkeypatch.setattr(toolbox, "files_from_posts", lambda args, posts: calls.append("files_from_posts") or {})
-    monkeypatch.setattr(toolbox, "download_files", lambda args, files: calls.append("download_files") or files)
+    monkeypatch.setattr(
+        toolbox, "files_from_posts", lambda args, posts: calls.append("files_from_posts") or {}
+    )
+    monkeypatch.setattr(
+        toolbox, "download_files", lambda args, files: calls.append("download_files") or files
+    )
     monkeypatch.setattr(toolbox, "summarize", lambda args, files: calls.append("summarize"))
 
     toolbox.mode_download_files(context_tmp)
@@ -1071,7 +1148,8 @@ def test_mode_download_links_overrides_config_and_runs(context_tmp, monkeypatch)
     """
 
     class FakeApi:
-        def check_api_auth(self): return True
+        def check_api_auth(self):
+            return True
 
     context_tmp.api_client = FakeApi()
     context_tmp.config.old_url_thumb = "https://old.example.com/thumb/"
@@ -1080,8 +1158,12 @@ def test_mode_download_links_overrides_config_and_runs(context_tmp, monkeypatch)
     called = []
     monkeypatch.setattr(toolbox, "log", lambda args: called.append("log"))
     monkeypatch.setattr(toolbox, "posts_from_export", lambda args: called.append("export") or {})
-    monkeypatch.setattr(toolbox, "posts_from_api", lambda args, posts: called.append("api") or posts)
-    monkeypatch.setattr(toolbox, "files_from_posts", lambda args, posts: called.append("files_from_posts") or {})
+    monkeypatch.setattr(
+        toolbox, "posts_from_api", lambda args, posts: called.append("api") or posts
+    )
+    monkeypatch.setattr(
+        toolbox, "files_from_posts", lambda args, posts: called.append("files_from_posts") or {}
+    )
     monkeypatch.setattr(toolbox, "summarize", lambda args, files: called.append("summarize"))
 
     toolbox.mode_download_links(context_tmp)
@@ -1098,7 +1180,8 @@ def test_mode_update_posts_and_delete_files_auth_gate(context_tmp, capsys):
     """
 
     class BadApi:
-        def check_api_auth(self): return False
+        def check_api_auth(self):
+            return False
 
     context_tmp.api_client = BadApi()
 
@@ -1106,7 +1189,8 @@ def test_mode_update_posts_and_delete_files_auth_gate(context_tmp, capsys):
     assert "API is inaccessible" in capsys.readouterr().out
 
     class BadAdmin:
-        def check_admin_auth(self): return False
+        def check_admin_auth(self):
+            return False
 
     context_tmp.admin_client = BadAdmin()
 
@@ -1121,19 +1205,35 @@ def test_mode_update_legacy_links_calls_expected(context_tmp, monkeypatch):
     """
 
     class GoodApi:
-        def check_api_auth(self): return True
+        def check_api_auth(self):
+            return True
 
     context_tmp.api_client = GoodApi()
 
     context_tmp.config.skip_days = "5"
 
     calls = []
-    monkeypatch.setattr(toolbox, "posts_from_export", lambda args, legacy=False: calls.append(("export", legacy)) or {})
-    monkeypatch.setattr(toolbox, "files_from_export", lambda args, posts: calls.append("files_from_export") or {})
-    monkeypatch.setattr(toolbox, "summarize", lambda args, files, legacy=False: calls.append(("summarize", legacy)))
-    monkeypatch.setattr(toolbox, "update_posts", lambda args, legacy=False: calls.append(("update_posts", legacy)))
+    monkeypatch.setattr(
+        toolbox,
+        "posts_from_export",
+        lambda args, legacy=False: calls.append(("export", legacy)) or {},
+    )
+    monkeypatch.setattr(
+        toolbox, "files_from_export", lambda args, posts: calls.append("files_from_export") or {}
+    )
+    monkeypatch.setattr(
+        toolbox, "summarize", lambda args, files, legacy=False: calls.append(("summarize", legacy))
+    )
+    monkeypatch.setattr(
+        toolbox, "update_posts", lambda args, legacy=False: calls.append(("update_posts", legacy))
+    )
 
     toolbox.mode_update_legacy_links(context_tmp)
 
     assert int(context_tmp.config.skip_days) == 0
-    assert calls == [("export", True), "files_from_export", ("summarize", True), ("update_posts", True)]
+    assert calls == [
+        ("export", True),
+        "files_from_export",
+        ("summarize", True),
+        ("update_posts", True),
+    ]
