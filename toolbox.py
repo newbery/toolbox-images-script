@@ -1113,19 +1113,11 @@ def check_urls_in_old_folder(context: Namespace) -> None:
     if not new_prefix.endswith("/"):
         new_prefix += "/"
 
-    def is_special(path: str) -> bool:
-        return ("#" in path) or ("?" in path)
-
-    def safe_quote(path: str) -> str:
-        # Similar strategy as get_new_url_func() but let's assume the local path
-        # is already unquoted, then check if this is a special case that requires
-        # double quoting.
-        # path = quote(path) if is_special(path) else path
-        # return quote(path)
-        # quoted = quote(path, safe="-._~%")
+    def double_quote(path: str) -> str:
         return quote(quote(path))
 
-    # If new_prefix is a proxy URL with query params, filenames may need quoting.
+    # If new_prefix is a proxy URL with query params, filenames may need
+    # to be quoted twice to protect special characters through the proxy.
     fixpath = safe_quote if "?" in new_prefix else (lambda x: x)
 
     def iter_old_files():
