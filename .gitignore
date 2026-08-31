@@ -16,13 +16,7 @@ __pycache__/
 .python-version
 poetry.lock
 
-# Ignore working input/output directories
-/csv*
-/downloads*
-/images*
-/output*
-
-# Ignore my dev stash directories
+# Ignore my input/output and dev stash directories
 /_*
 
 # Don't ignore the templates
