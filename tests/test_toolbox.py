@@ -1,9 +1,9 @@
 import csv
 import json
-from argparse import Namespace
 from datetime import datetime as real_datetime
 from datetime import timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,8 +34,29 @@ def _patch_alive_bar(monkeypatch):
     yield
 
 
+def _config_for(tmp_path: Path, **changes) -> toolbox.Config:
+    values = {
+        "api_url": "https://api.example.com",
+        "admin_url": "https://admin.example.com",
+        "export_dir": tmp_path / "export",
+        "download_dir": tmp_path / "downloads",
+        "output_dir": tmp_path / "out",
+        "old_url": "https://old.example.com/",
+        "old_url_thumb": "https://old.example.com/thumb/",
+        "new_url": "https://new.example.com/",
+        "skip_days": 0,
+        "test_post_id": None,
+        "dry_run": True,
+        "api_key": "key",
+        "api_username": "user",
+        "admin_cookie": "cookie",
+    }
+    values.update(changes)
+    return toolbox.Config(**values)
+
+
 @pytest.fixture
-def context_tmp(tmp_path) -> Namespace:
+def context_tmp(tmp_path) -> toolbox.Context:
     export_dir = tmp_path / "export"
     download_dir = tmp_path / "downloads"
     output_dir = tmp_path / "out"
@@ -43,28 +64,14 @@ def context_tmp(tmp_path) -> Namespace:
     download_dir.mkdir()
     output_dir.mkdir()
 
-    cfg = Namespace(
-        export_dir=str(export_dir),
-        download_dir=str(download_dir),
-        output_dir=str(output_dir),
-        old_url="https://old.example.com/",
-        old_url_thumb="https://old.example.com/thumb/",
-        new_url="https://new.example.com/",
-        skip_days="0",
-        test_post_id="",
-        dry_run="true",
+    cfg = _config_for(tmp_path)
+
+    return toolbox.Context(
+        args=toolbox.CliArgs(mode="download_files", dry_run=True, yes=True),
+        config=cfg,
+        path=toolbox.paths(cfg),
+        dry_run=True,
     )
-
-    context = Namespace(config=cfg)
-    context.path = toolbox.paths(cfg)
-    context.args = Namespace(
-        mode="download_files", verbose=False, apply=False, dry_run=True, yes=True
-    )
-
-    # Most unit tests run in dry-run mode by default.
-    context.dry_run = True
-
-    return context
 
 
 # -------------------------
@@ -260,11 +267,18 @@ def test_rotate_output_archive_rotates_and_prunes(tmp_path, monkeypatch):
     for d in (export_dir, download_dir, output_dir):
         d.mkdir()
 
-    cfg = Namespace(
-        export_dir=str(export_dir), download_dir=str(download_dir), output_dir=str(output_dir)
+    cfg = _config_for(
+        tmp_path,
+        export_dir=export_dir,
+        download_dir=download_dir,
+        output_dir=output_dir,
     )
-    context = Namespace(config=cfg)
-    context.path = toolbox.paths(cfg)
+    context = toolbox.Context(
+        args=toolbox.CliArgs(mode="download_files"),
+        config=cfg,
+        path=toolbox.paths(cfg),
+        dry_run=True,
+    )
 
     # make output non-empty so it will archive
     (output_dir / "something.txt").write_text("x", encoding="utf-8")
@@ -312,34 +326,46 @@ def test_log_writes_line(context_tmp, monkeypatch):
 
 
 def test_config_merges_dotenv_and_env(monkeypatch):
-    """The `config` function should merge .env and .env.secrets (secrets win),
-    then apply TOOLBOX_* environment overrides while ignoring unrelated
-    environment variables.
-    """
+    """Config loading should merge sources and coerce values to typed fields."""
 
-    # Patch dotenv_values to avoid touching disk
     def fake_dotenv_values(filename):
         if filename == ".env":
-            return {"A": "1", "B": "2"}
+            return {
+                "API_URL": "https://api.example.com",
+                "ADMIN_URL": "https://admin.example.com",
+                "EXPORT_DIR": "csv",
+                "DOWNLOAD_DIR": "downloads",
+                "OUTPUT_DIR": "output",
+                "OLD_URL": "https://old.example.com/",
+                "OLD_URL_THUMB": "",
+                "NEW_URL": "https://new.example.com/",
+                "SKIP_DAYS": "30",
+                "TEST_POST_ID": "",
+                "DRY_RUN": "true",
+                "API_USERNAME": "from-env-file",
+            }
         if filename == ".env.secrets":
-            return {"B": "secret", "C": "3"}
+            return {
+                "API_KEY": "secret-key",
+                "API_USERNAME": "secret-user",
+                "ADMIN_COOKIE": "secret-cookie",
+            }
         return {}
 
     monkeypatch.setattr(toolbox, "dotenv_values", fake_dotenv_values)
-    monkeypatch.setenv("TOOLBOX_D", "4")
+    monkeypatch.setenv("TOOLBOX_SKIP_DAYS", "7")
+    monkeypatch.setenv("TOOLBOX_DRY_RUN", "false")
     monkeypatch.setenv("OTHER", "x")
 
     cfg = toolbox.config()
 
-    # dotenv keys should be lowercased
-    assert cfg.a == "1"
-
-    # secrets override
-    assert cfg.b == "secret"
-    assert cfg.c == "3"
-
-    # env override
-    assert cfg.d == "4"
+    assert cfg.api_username == "secret-user"
+    assert cfg.api_key == "secret-key"
+    assert cfg.skip_days == 7
+    assert cfg.dry_run is False
+    assert cfg.export_dir == Path("csv")
+    assert cfg.old_url_thumb is None
+    assert cfg.test_post_id is None
     assert not hasattr(cfg, "other")
 
 
@@ -347,11 +373,7 @@ def test_paths_builds_expected_paths(tmp_path):
     """The `paths` function should build the derived filesystem paths
     (exports/downloads/output and expected filenames) from the config directories.
     """
-    cfg = Namespace(
-        export_dir=str(tmp_path / "export"),
-        download_dir=str(tmp_path / "downloads"),
-        output_dir=str(tmp_path / "out"),
-    )
+    cfg = _config_for(tmp_path)
     paths = toolbox.paths(cfg)
     assert paths.export_dir.name == "export"
     assert paths.posts.name == "posts.csv"
@@ -380,8 +402,8 @@ def test_posts_from_export_collects_urls(context_tmp):
 
     posts = toolbox.posts_from_export(context_tmp)
     assert set(posts) == {"1", "2"}
-    assert posts["1"]["image_urls"] == ["https://old.example.com/123/a.jpg"]
-    assert posts["2"]["image_urls"] == []
+    assert posts["1"].image_urls == ["https://old.example.com/123/a.jpg"]
+    assert posts["2"].image_urls == []
 
     out_rows = list(toolbox.read_csv(context_tmp.path.posts_from_export))
     assert out_rows[0]["pid"] == "1"
@@ -412,7 +434,7 @@ def test_posts_from_api_stops_when_pid_already_seen(context_tmp):
             return FakeApiRequests(self._pages)
 
     # Existing post from export already processed
-    posts = {"1": {"date": "100", "image_urls": []}}
+    posts = {"1": toolbox.Post(date="100", image_urls=[])}
     pages = [
         {
             "data": [
@@ -430,7 +452,7 @@ def test_posts_from_api_stops_when_pid_already_seen(context_tmp):
 
     out = toolbox.posts_from_api(context_tmp, posts)
     assert "2" in out
-    assert out["2"]["image_urls"] == ["https://old.example.com/2.jpg"]
+    assert out["2"].image_urls == ["https://old.example.com/2.jpg"]
 
     # "3" should not be processed due to early stop
     assert "3" not in out
@@ -445,20 +467,24 @@ def test_files_from_posts_toolbox_parses_fileids_and_thumb(context_tmp):
     # Make it look like a toolbox/cloudfront url so toolbox=True
     context_tmp.config.old_url = "https://abc.cloudfront.net/"
     context_tmp.config.old_url_thumb = "https://abc.cloudfront.net/thumb/"
-    context_tmp.config.skip_days = "0"
+    context_tmp.config.skip_days = 0
 
     posts = {
-        "1": {"date": "0", "image_urls": ["https://abc.cloudfront.net/999/123/a.jpg"]},
-        "2": {"date": "0", "image_urls": ["https://abc.cloudfront.net/thumb/999/123/a.jpg"]},
+        "1": toolbox.Post(
+            date="0", image_urls=["https://abc.cloudfront.net/999/123/a.jpg"]
+        ),
+        "2": toolbox.Post(
+            date="0", image_urls=["https://abc.cloudfront.net/thumb/999/123/a.jpg"]
+        ),
     }
     files = toolbox.files_from_posts(context_tmp, posts)
     assert "123" in files
 
     f = files["123"]
-    assert f["url"].endswith("/999/123/a.jpg")
-    assert f["url_thumb"].endswith("/thumb/999/123/a.jpg")
-    assert f["pids"] == {"1", "2"}
-    assert f["path"] == "999/123/a.jpg"
+    assert f.url.endswith("/999/123/a.jpg")
+    assert f.url_thumb.endswith("/thumb/999/123/a.jpg")
+    assert f.pids == {"1", "2"}
+    assert f.path == "999/123/a.jpg"
 
 
 def test_files_from_posts_skips_recent_or_nonmatching_test_post(context_tmp):
@@ -467,13 +493,17 @@ def test_files_from_posts_skips_recent_or_nonmatching_test_post(context_tmp):
     """
     context_tmp.config.old_url = "https://abc.cloudfront.net/"
     context_tmp.config.old_url_thumb = ""
-    context_tmp.config.skip_days = "1"  # skip anything newer than 1 day ago
+    context_tmp.config.skip_days = 1  # skip anything newer than 1 day ago
 
     now_ts = int(real_datetime.now(timezone.utc).timestamp())
-    posts = {"1": {"date": str(now_ts), "image_urls": ["https://abc.cloudfront.net/1/111/a.jpg"]}}
+    posts = {
+        "1": toolbox.Post(
+            date=str(now_ts), image_urls=["https://abc.cloudfront.net/1/111/a.jpg"]
+        )
+    }
 
     files = toolbox.files_from_posts(context_tmp, posts)
-    assert files["111"]["result"] == toolbox.File.skipped
+    assert files["111"].result == toolbox.FileResult.skipped
 
 
 def test_files_from_export_builds_new_url(context_tmp):
@@ -484,13 +514,13 @@ def test_files_from_export_builds_new_url(context_tmp):
 
     # Posts with legacy /file?id= urls; attachments.csv supplies filename
     context_tmp.config.old_url = "https://abc.cloudfront.net/"
-    posts = {"1": {"date": "0", "image_urls": ["/file?id=123"]}}
+    posts = {"1": toolbox.Post(date="0", image_urls=["/file?id=123"])}
 
     attach = context_tmp.path.export_dir / "attachment.csv"
     attach.write_text("fileid,filename\n123,a.jpg\n", encoding="utf-8")
 
     files = toolbox.files_from_export(context_tmp, posts)
-    assert files["123"]["new_url"] == "https://abc.cloudfront.net/123/a.jpg"
+    assert files["123"].new_url == "https://abc.cloudfront.net/123/a.jpg"
 
 
 def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
@@ -513,30 +543,23 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
     context_tmp.downloader = FakeDownloader()
 
     files = {
-        "1": {
-            "url": "https://x/1.jpg",
-            "url_thumb": "",
-            "url_file": "",
-            "path": "1.jpg",
-            "pids": {"p1"},
-            "result": toolbox.File.default,
-        },
-        "2": {
-            "url": "https://x/2.jpg",
-            "url_thumb": "https://x/t2.jpg",
-            "url_file": "",
-            "path": "2.jpg",
-            "pids": {"p2"},
-            "result": toolbox.File.default,
-        },
-        "3": {
-            "url": "https://x/3.jpg",
-            "url_thumb": "",
-            "url_file": "",
-            "path": "3.jpg",
-            "pids": {"p3"},
-            "result": toolbox.File.skipped,
-        },
+        "1": toolbox.ForumFile(
+            fileid="1", url="https://x/1.jpg", path="1.jpg", pids={"p1"}
+        ),
+        "2": toolbox.ForumFile(
+            fileid="2",
+            url="https://x/2.jpg",
+            url_thumb="https://x/t2.jpg",
+            path="2.jpg",
+            pids={"p2"},
+        ),
+        "3": toolbox.ForumFile(
+            fileid="3",
+            url="https://x/3.jpg",
+            path="3.jpg",
+            pids={"p3"},
+            result=toolbox.FileResult.skipped,
+        ),
     }
 
     # Make download fail for one file
@@ -550,9 +573,9 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
     context_tmp.downloader.download = fake_download  # type: ignore
 
     out = toolbox.download_files(context_tmp, files)
-    assert out["1"]["result"] == toolbox.File.error
-    assert out["2"]["result"] == toolbox.File.downloaded
-    assert out["3"]["result"] == toolbox.File.skipped
+    assert out["1"].result == toolbox.FileResult.error
+    assert out["2"].result == toolbox.FileResult.downloaded
+    assert out["3"].result == toolbox.FileResult.skipped
 
 
 def _write_csv(path: Path, header, rows):
@@ -597,22 +620,20 @@ def test_summarize_writes_posts_and_files(context_tmp):
     )
 
     files = {
-        "123": {
-            "url": "https://old.example.com/123/a.jpg",
-            "url_thumb": "",
-            "url_file": "",
-            "path": "123/a.jpg",
-            "pids": {"2", "3"},
-            "result": toolbox.File.downloaded,
-        },
-        "999": {
-            "url": "https://old.example.com/999/missing.jpg",
-            "url_thumb": "",
-            "url_file": "",
-            "path": "999/missing.jpg",
-            "pids": {"1"},
-            "result": toolbox.File.skipped,
-        },
+        "123": toolbox.ForumFile(
+            fileid="123",
+            url="https://old.example.com/123/a.jpg",
+            path="123/a.jpg",
+            pids={"2", "3"},
+            result=toolbox.FileResult.downloaded,
+        ),
+        "999": toolbox.ForumFile(
+            fileid="999",
+            url="https://old.example.com/999/missing.jpg",
+            path="999/missing.jpg",
+            pids={"1"},
+            result=toolbox.FileResult.skipped,
+        ),
     }
 
     toolbox.summarize(context_tmp, files)
@@ -648,8 +669,12 @@ def test_check_new_urls_respects_skip_and_generates_file_scheme(context_tmp, tmp
     )
 
     files = {
-        "https://old.example.com/1.jpg": {"result": toolbox.File.skipped},
-        "https://old.example.com/2.jpg": {"result": toolbox.File.downloaded},
+        "https://old.example.com/1.jpg": toolbox.ForumFile(
+            fileid="1", url="https://old.example.com/1.jpg", result=toolbox.FileResult.skipped
+        ),
+        "https://old.example.com/2.jpg": toolbox.ForumFile(
+            fileid="2", url="https://old.example.com/2.jpg", result=toolbox.FileResult.downloaded
+        ),
     }
 
     def url_ok(url: str) -> bool:
@@ -711,7 +736,7 @@ def test_check_old_urls_detects_in_updated_or_nonupdated(context_tmp, tmp_path):
     )
 
     files_to_check = [
-        {"url": "https://old.example.com/123/a.jpg", "url_thumb": "", "fileid": "123"},
+        toolbox.ForumFile(fileid="123", url="https://old.example.com/123/a.jpg"),
     ]
 
     ok = toolbox.check_old_urls(context_tmp, files_to_check, legacy=False)
@@ -767,7 +792,7 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
                 "https://old.example.com/thumb/123/a.jpg",
                 "/file?id=123",
                 "",
-                str(toolbox.File.downloaded.value),
+                str(toolbox.FileResult.downloaded.value),
             ],
             [
                 "555",
@@ -776,7 +801,7 @@ def test_update_posts_updates_content_and_writes_outputs(context_tmp, monkeypatc
                 "",
                 "",
                 "",
-                str(toolbox.File.skipped.value),
+                str(toolbox.FileResult.skipped.value),
             ],
         ],
     )
@@ -834,7 +859,7 @@ def test_delete_files_batches_and_calls_client(context_tmp, monkeypatch):
 
     # Run in apply mode so the admin client is invoked.
     context_tmp.dry_run = False
-    context_tmp.args = Namespace(yes=True)
+    context_tmp.args = toolbox.CliArgs(mode="delete_files", apply=True, yes=True)
 
     toolbox.delete_files(context_tmp)
 
@@ -875,63 +900,47 @@ def test_parse_args_rejects_unknown_mode(monkeypatch):
         toolbox.parse_args(["nope"])
 
 
-def test_init_context_populates_context_and_dry_run_false(monkeypatch, capsys):
-    """The `init_context` function should populate context with args/config/paths
-    and set `dry_run` False when `config.dry_run` is exactly the string 'false'.
-    """
-    cfg = Namespace(dry_run="false")
-    paths_obj = Namespace(p="x")
-
+def test_init_context_populates_typed_context_and_config_dry_run_false(
+    tmp_path, monkeypatch, capsys
+):
+    """The typed context should use the configured dry-run value by default."""
+    cfg = _config_for(tmp_path, dry_run=False)
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
-    monkeypatch.setattr(toolbox, "paths", lambda _cfg: paths_obj)
 
-    args = Namespace(mode="download_files", verbose=False)
+    args = toolbox.CliArgs(mode="download_files")
     context = toolbox.init_context(args)
 
+    assert isinstance(context, toolbox.Context)
     assert context.args is args
     assert context.config is cfg
-    assert context.path is paths_obj
+    assert isinstance(context.path, toolbox.Paths)
     assert context.dry_run is False
     assert capsys.readouterr().out == ""
 
 
-def test_init_context_sets_dry_run_true_and_prints_banner(monkeypatch, capsys):
-    """The `init_context` function should set `dry_run` True for any `config.dry_run`
-    value other than literal 'false' and print the dry-run banner.
-    """
-    cfg = Namespace(dry_run="true")
-
+def test_init_context_sets_dry_run_true_and_prints_banner(tmp_path, monkeypatch, capsys):
+    """Configured dry-run should produce a dry-run context and banner."""
+    cfg = _config_for(tmp_path, dry_run=True)
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
-    monkeypatch.setattr(toolbox, "paths", lambda _cfg: Namespace())
 
-    args = Namespace(mode="download_files", verbose=False)
-    context = toolbox.init_context(args)
+    context = toolbox.init_context(toolbox.CliArgs(mode="download_files"))
 
     assert context.dry_run is True
     out = capsys.readouterr().out
     assert "---- Dry Run (no remote changes) ----" in out
 
 
-def test_init_context_reuses_existing_namespace(monkeypatch):
-    """The `init_context` function should update and return the provided context
-    Namespace rather than allocating a new one.
-    """
-    cfg = Namespace(dry_run="false")
-
+def test_init_context_cli_apply_overrides_config(tmp_path, monkeypatch):
+    """An explicit --apply option should override configured dry-run mode."""
+    cfg = _config_for(tmp_path, dry_run=True)
     monkeypatch.setattr(toolbox, "config", lambda: cfg)
-    monkeypatch.setattr(toolbox, "paths", lambda _cfg: Namespace())
 
-    args = Namespace(mode="download_files", verbose=False)
-    existing = Namespace(existing=1)
+    context = toolbox.init_context(toolbox.CliArgs(mode="download_files", apply=True))
 
-    ctx = toolbox.init_context(args, context=existing)
-    assert ctx is existing
-    assert ctx.existing == 1
-    assert ctx.args is args
-    assert ctx.config is cfg
+    assert context.dry_run is False
 
 
-def test_init_clients_configures_session_clients_and_url_ok(monkeypatch):
+def test_init_clients_configures_session_clients_and_url_ok(context_tmp, monkeypatch):
     """The `init_clients` function should mount FileAdapter for file://,
     set User-Agent, attach client helpers, and expose the `url_ok` function
     that accepts 200/206 and rejects other status codes.
@@ -978,7 +987,7 @@ def test_init_clients_configures_session_clients_and_url_ok(monkeypatch):
     )
     monkeypatch.setattr(toolbox, "Downloader", lambda ctx: created.__setitem__("dl", ctx) or dl_obj)
 
-    ctx = Namespace()
+    ctx = context_tmp
     sess = FakeSession()
     out = toolbox.init_clients(ctx, session=sess)
 
@@ -1002,7 +1011,7 @@ def test_init_clients_configures_session_clients_and_url_ok(monkeypatch):
     assert sess.head_calls[0] == ("http://ok.example", True, 30)
 
 
-def test_init_clients_creates_session_when_none(monkeypatch):
+def test_init_clients_creates_session_when_none(context_tmp, monkeypatch):
     """The `init_clients` function should create a `requests.Session` when session
     is None and store it on `context.session`.
     """
@@ -1033,7 +1042,7 @@ def test_init_clients_creates_session_when_none(monkeypatch):
     monkeypatch.setattr(toolbox, "AdminClient", lambda ctx: object())
     monkeypatch.setattr(toolbox, "Downloader", lambda ctx: object())
 
-    ctx = Namespace()
+    ctx = context_tmp
     toolbox.init_clients(ctx, session=None)
 
     assert isinstance(ctx.session, FakeSession)
@@ -1044,14 +1053,14 @@ def test_main_parses_initializes_and_dispatches_mode(monkeypatch):
     and dispatch the selected mode exactly once using modes()[args.mode].
     """
     called = {"parse": 0, "ctx": 0, "init": 0, "mode": 0}
-    args_obj = Namespace(mode="download_files", verbose=False)
+    args_obj = toolbox.CliArgs(mode="download_files")
 
     def fake_parse(argv):
         called["parse"] += 1
         assert argv == ["download_files"]
         return args_obj
 
-    ctx_obj = Namespace()
+    ctx_obj = SimpleNamespace()
 
     def fake_init_context(args):
         called["ctx"] += 1
@@ -1153,7 +1162,7 @@ def test_mode_download_links_overrides_config_and_runs(context_tmp, monkeypatch)
 
     context_tmp.api_client = FakeApi()
     context_tmp.config.old_url_thumb = "https://old.example.com/thumb/"
-    context_tmp.config.skip_days = "99"
+    context_tmp.config.skip_days = 99
 
     called = []
     monkeypatch.setattr(toolbox, "log", lambda args: called.append("log"))
@@ -1169,7 +1178,7 @@ def test_mode_download_links_overrides_config_and_runs(context_tmp, monkeypatch)
     toolbox.mode_download_links(context_tmp)
 
     assert context_tmp.config.old_url_thumb is None
-    assert int(context_tmp.config.skip_days) == 0
+    assert context_tmp.config.skip_days == 0
     assert called == ["log", "export", "api", "files_from_posts", "summarize"]
 
 
@@ -1210,7 +1219,7 @@ def test_mode_update_legacy_links_calls_expected(context_tmp, monkeypatch):
 
     context_tmp.api_client = GoodApi()
 
-    context_tmp.config.skip_days = "5"
+    context_tmp.config.skip_days = 5
 
     calls = []
     monkeypatch.setattr(
@@ -1230,7 +1239,7 @@ def test_mode_update_legacy_links_calls_expected(context_tmp, monkeypatch):
 
     toolbox.mode_update_legacy_links(context_tmp)
 
-    assert int(context_tmp.config.skip_days) == 0
+    assert context_tmp.config.skip_days == 0
     assert calls == [
         ("export", True),
         "files_from_export",

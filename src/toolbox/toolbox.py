@@ -7,16 +7,16 @@ import sys
 import tempfile
 import time
 import warnings
-from argparse import Namespace
 from ast import literal_eval
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import cache, cached_property, partial
 from itertools import chain, islice
 from pathlib import Path
-from typing import Iterator
+from typing import Self
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
@@ -49,8 +49,145 @@ USAGE = """
 """
 
 
+@dataclass(slots=True)
+class CliArgs:
+    """Command-line options after parsing."""
+
+    mode: str
+    verbose: bool = False
+    apply: bool = False
+    dry_run: bool = False
+    yes: bool = False
+
+
+@dataclass(slots=True)
+class Config:
+    """Typed runtime configuration loaded from dotenv files and the environment."""
+
+    api_url: str
+    admin_url: str
+    export_dir: Path
+    download_dir: Path
+    output_dir: Path
+    old_url: str
+    old_url_thumb: str | None
+    new_url: str
+    skip_days: int
+    test_post_id: str | None
+    dry_run: bool
+    api_key: str
+    api_username: str
+    admin_cookie: str
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, str | None]) -> Self:
+        """Build configuration from merged, lower-case string settings."""
+
+        def value(name: str, default: str = "") -> str:
+            raw = values.get(name, default)
+            return default if raw is None else raw
+
+        old_url_thumb = value("old_url_thumb") or None
+        test_post_id = value("test_post_id") or None
+
+        return cls(
+            api_url=value("api_url"),
+            admin_url=value("admin_url"),
+            export_dir=Path(value("export_dir")),
+            download_dir=Path(value("download_dir")),
+            output_dir=Path(value("output_dir")),
+            old_url=value("old_url"),
+            old_url_thumb=old_url_thumb,
+            new_url=value("new_url"),
+            skip_days=int(value("skip_days", "0")),
+            test_post_id=test_post_id,
+            dry_run=parse_bool(values.get("dry_run"), default=True),
+            api_key=value("api_key"),
+            api_username=value("api_username"),
+            admin_cookie=value("admin_cookie"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Paths:
+    """Local input, working, and output paths derived from configuration."""
+
+    export_dir: Path
+    download_dir: Path
+    output_dir: Path
+    posts_from_export: Path
+    posts_from_api: Path
+    posts: Path
+    files: Path
+    updates: Path
+    fileids_to_delete: Path
+    fileids_to_delete_dry_run: Path
+    log: Path
+
+
+@dataclass(slots=True)
+class Post:
+    """Minimal post data needed while discovering image references."""
+
+    date: str
+    image_urls: list[str]
+
+
+class FileResult(Enum):
+    default = 0
+    skipped = 1
+    downloaded = 2
+    error = 3
+
+
+@dataclass(slots=True)
+class ForumFile:
+    """A forum-hosted file and the posts and migration state associated with it."""
+
+    fileid: str
+    url: str
+    url_thumb: str = ""
+    url_file: str = ""
+    path: str = ""
+    pids: set[str] = field(default_factory=set)
+    result: FileResult = FileResult.default
+    new_url: str = ""
+
+    @classmethod
+    def from_csv_row(cls, row: Mapping[str, str]) -> Self:
+        """Deserialize one row from files.csv."""
+        return cls(
+            fileid=row["fileid"],
+            pids=set(literal_eval(row["pids"])),
+            url=row["url"],
+            url_thumb=row["url_thumb"],
+            url_file=row["url_file"],
+            new_url=row["new_url"],
+            result=FileResult(int(row["result"])),
+        )
+
+
+PostMap = dict[str, Post]
+FileMap = dict[str, ForumFile]
+
+
+@dataclass(slots=True)
+class Context:
+    """Runtime state shared by the migration pipeline and service clients."""
+
+    args: CliArgs
+    config: Config
+    path: Paths
+    dry_run: bool
+    session: requests.Session = field(init=False, repr=False)
+    api_client: "APIClient" = field(init=False, repr=False)
+    admin_client: "AdminClient" = field(init=False, repr=False)
+    downloader: "Downloader" = field(init=False, repr=False)
+    url_ok: Callable[[str], bool] = field(init=False, repr=False)
+
+
 @cache
-def modes() -> dict[str, Callable[[Namespace], None]]:
+def modes() -> dict[str, Callable[[Context], None]]:
     """Command line modes"""
     return {
         "download_files": mode_download_files,
@@ -62,7 +199,7 @@ def modes() -> dict[str, Callable[[Namespace], None]]:
     }
 
 
-def main(argv: list | None = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     """Main command line entrypoint"""
     argv = argv or sys.argv[1:]
     args = parse_args(argv)
@@ -72,7 +209,7 @@ def main(argv: list | None = None) -> None:
         modes()[args.mode](context)
 
 
-def parse_args(argv: list) -> Namespace:
+def parse_args(argv: list[str]) -> CliArgs:
     """Parse command line args"""
     parser = argparse.ArgumentParser(
         description=DESCRIPTION,
@@ -107,32 +244,37 @@ def parse_args(argv: list) -> Namespace:
     )
 
     parser.add_argument("mode", choices=list(modes()))
-    return parser.parse_args(argv)
+    parsed = parser.parse_args(argv)
+    return CliArgs(
+        mode=parsed.mode,
+        verbose=parsed.verbose,
+        apply=parsed.apply,
+        dry_run=parsed.dry_run,
+        yes=parsed.yes,
+    )
 
 
-def init_context(args: Namespace, context: Namespace | None = None) -> Namespace:
-    """Initialize context"""
-    context = context or Namespace()
-    context.args = args
-    context.config = config()
-    context.path = paths(context.config)
+def init_context(args: CliArgs) -> Context:
+    """Initialize the typed runtime context."""
+    cfg = config()
+    path = paths(cfg)
 
     # Determine dry-run mode.
     # Precedence: explicit CLI flags > config/env (default: dry-run).
-    if getattr(args, "apply", False):
-        context.dry_run = False
-    elif getattr(args, "dry_run", False):
-        context.dry_run = True
+    if args.apply:
+        dry_run = False
+    elif args.dry_run:
+        dry_run = True
     else:
-        context.dry_run = parse_bool(getattr(context.config, "dry_run", None), default=True)
+        dry_run = cfg.dry_run
 
-    if context.dry_run:
+    if dry_run:
         print("---- Dry Run (no remote changes) ----")
 
-    return context
+    return Context(args=args, config=cfg, path=path, dry_run=dry_run)
 
 
-def init_clients(context: Namespace, session: requests.Session | None = None) -> Namespace:
+def init_clients(context: Context, session: requests.Session | None = None) -> Context:
     """Initialize service clients and add to context"""
     session = session or requests.Session()
     session.mount("file://", FileAdapter())
@@ -151,7 +293,7 @@ def init_clients(context: Namespace, session: requests.Session | None = None) ->
     return context
 
 
-def mode_download_files(context: Namespace) -> None:
+def mode_download_files(context: Context) -> None:
     """Process posts, download images, and then generate a list of downloaded
     images and a list of posts to update.
 
@@ -190,7 +332,7 @@ def mode_download_files(context: Namespace) -> None:
     print("Done")
 
 
-def mode_download_links(context: Namespace) -> None:
+def mode_download_links(context: Context) -> None:
     """Collect links from posts and then generate a list of posts to update.
 
     This is very similar to 'mode_download_files' except no files are downloaded.
@@ -231,7 +373,7 @@ def mode_download_links(context: Namespace) -> None:
     print("Done")
 
 
-def mode_update_posts(context: Namespace) -> None:
+def mode_update_posts(context: Context) -> None:
     """Process the `posts.csv` result from the last `download_*` run and update
     the posts with image links updated to point to the new image host.
 
@@ -254,7 +396,7 @@ def mode_update_posts(context: Namespace) -> None:
     print("Done")
 
 
-def mode_delete_files(context: Namespace) -> None:
+def mode_delete_files(context: Context) -> None:
     """Process the `posts.csv` result from the last `download` run and update
     the posts with image links updated to point to the new image host.
 
@@ -275,7 +417,7 @@ def mode_delete_files(context: Namespace) -> None:
     print("Done")
 
 
-def mode_update_legacy_links(context: Namespace) -> None:
+def mode_update_legacy_links(context: Context) -> None:
     """Clean up legacy urls in a Toolbox forum.
 
     There are two types of legacy urls: "/file?=" and "files.websitetoolbox.com".
@@ -312,20 +454,20 @@ def mode_update_legacy_links(context: Namespace) -> None:
     print("Done")
 
 
-def posts_from_export(context: Namespace, legacy: bool = False) -> dict:
+def posts_from_export(context: Context, legacy: bool = False) -> PostMap:
     """Process the posts listed in the `posts.csv` file from the Toolbox content
     export, collecting a list of image urls in the message text for any images
     hosted by the Toolbox server.
     """
     old_url: str = context.config.old_url
-    old_url_thumb: str = context.config.old_url_thumb
+    old_url_thumb = context.config.old_url_thumb
     posts_input_path = context.path.export_dir / "posts.csv"
     posts_output_path = context.path.posts_from_export
 
     prefix: str | tuple[str, str] = (old_url, old_url_thumb) if old_url_thumb else old_url
     find_urls = find_legacy_urls if legacy else find_urls_func(prefix)
 
-    posts = {}
+    posts: PostMap = {}
     count = max(0, linecount(posts_input_path) - 1)
     found = 0
 
@@ -342,7 +484,7 @@ def posts_from_export(context: Namespace, legacy: bool = False) -> dict:
                 image_urls = find_urls(message)
                 if image_urls:
                     found += 1
-                posts[pid] = {"date": date, "image_urls": image_urls}
+                posts[pid] = Post(date=date, image_urls=image_urls)
                 posts_output.writerow([pid, date, image_urls, message])
                 bar()
 
@@ -350,7 +492,7 @@ def posts_from_export(context: Namespace, legacy: bool = False) -> dict:
     return posts
 
 
-def posts_from_api(context: Namespace, posts: dict) -> dict:
+def posts_from_api(context: Context, posts: PostMap) -> PostMap:
     """Process the posts collected via the List Posts API, collecting a list of
     image urls in the message text for any images hosted by the Toolbox server.
 
@@ -393,7 +535,7 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
                     image_urls = find_urls(message)
                     if image_urls:
                         found += 1
-                    posts[pid] = {"date": date, "image_urls": image_urls}
+                    posts[pid] = Post(date=date, image_urls=image_urls)
                     posts_output.writerow([pid, date, image_urls, message])
                     bar()
 
@@ -404,7 +546,7 @@ def posts_from_api(context: Namespace, posts: dict) -> dict:
     return posts
 
 
-def files_from_posts(context: Namespace, posts: dict) -> dict:
+def files_from_posts(context: Context, posts: PostMap) -> FileMap:
     """Collect the file info for the urls found in the posts and tag the
     ones that should be excluded.
 
@@ -415,7 +557,7 @@ def files_from_posts(context: Namespace, posts: dict) -> dict:
     """
     test_post_id = context.config.test_post_id
     utc = timezone.utc
-    last_date = datetime.now(utc) - timedelta(days=int(context.config.skip_days))
+    last_date = datetime.now(utc) - timedelta(days=context.config.skip_days)
     prefix = context.config.old_url
     prefix_thumb = context.config.old_url_thumb
 
@@ -424,10 +566,10 @@ def files_from_posts(context: Namespace, posts: dict) -> dict:
     toolbox = ".cloudfront.net/" in prefix
 
     # Generate map of files/images to posts and set of files_to_exclude
-    files = {}
-    files_to_exclude = set()
+    files: FileMap = {}
+    files_to_exclude: set[str] = set()
     for pid, post in posts.items():
-        urls = post["image_urls"]
+        urls = post.image_urls
 
         fileids: list[str] = []
         pairs: list[tuple[str, str]] = []
@@ -446,7 +588,7 @@ def files_from_posts(context: Namespace, posts: dict) -> dict:
             files_to_exclude.update(fileids)
         else:
             try:
-                ts = int(post["date"])
+                ts = int(post.date)
             except Exception:
                 print("Bad date")
                 continue
@@ -455,32 +597,32 @@ def files_from_posts(context: Namespace, posts: dict) -> dict:
 
         for fileid, url in pairs:
             if fileid in files:
-                files[fileid]["pids"].add(pid)
-                if not files[fileid]["url_thumb"]:
+                files[fileid].pids.add(pid)
+                if not files[fileid].url_thumb:
                     if prefix_thumb and url.startswith(prefix_thumb):
-                        files[fileid]["url_thumb"] = url
+                        files[fileid].url_thumb = url
             else:
                 thumb = ""
                 if prefix_thumb and url.startswith(prefix_thumb):
                     thumb = url
                     url = url.replace(prefix_thumb, prefix)
-                files[fileid] = {
-                    "url": url,
-                    "url_thumb": thumb,
-                    "url_file": f"/file?id={fileid}" if toolbox else "",
-                    "path": unquote(url[len(prefix) :]),
-                    "pids": {pid},
-                    "result": "",
-                }
+                files[fileid] = ForumFile(
+                    fileid=fileid,
+                    url=url,
+                    url_thumb=thumb,
+                    url_file=f"/file?id={fileid}" if toolbox else "",
+                    path=unquote(url[len(prefix) :]),
+                    pids={pid},
+                )
 
     # Tag files to be skipped
     for fileid in files_to_exclude:
-        files[fileid]["result"] = File.skipped
+        files[fileid].result = FileResult.skipped
 
     return files
 
 
-def files_from_export(context: Namespace, posts: dict) -> dict:
+def files_from_export(context: Context, posts: PostMap) -> FileMap:
     """This is a special mode for updating legacy links. In this case, we
     need to collect the image data from the export in order to construct
     the updated urls.
@@ -489,9 +631,9 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
     files_input_path = context.path.export_dir / "attachment.csv"
 
     # Generate map of files/images to posts
-    files = {}
+    files: FileMap = {}
     for pid, post in posts.items():
-        urls = post["image_urls"]
+        urls = post.image_urls
 
         pairs: list[tuple[str, str]] = []
         for url in urls:
@@ -500,16 +642,13 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
 
         for fileid, url in pairs:
             if fileid in files:
-                files[fileid]["pids"].add(pid)
+                files[fileid].pids.add(pid)
             else:
-                files[fileid] = {
-                    "url": url,
-                    "url_thumb": "",
-                    "url_file": "",
-                    "path": "",
-                    "pids": {pid},
-                    "result": "",
-                }
+                files[fileid] = ForumFile(
+                    fileid=fileid,
+                    url=url,
+                    pids={pid},
+                )
 
     # Generate new_url from 'attachments.csv' export
     count = 0
@@ -519,7 +658,7 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
         fileid = row["fileid"]
         if fileid in files:
             seen.add(fileid)
-            files[fileid]["new_url"] = old_url + f"{fileid}/{row['filename']}"
+            files[fileid].new_url = old_url + f"{fileid}/{row['filename']}"
             count += 1
             if count == filecount:
                 break
@@ -534,12 +673,12 @@ def files_from_export(context: Namespace, posts: dict) -> dict:
     return files
 
 
-def download_files(context: Namespace, files: dict) -> dict:
+def download_files(context: Context, files: FileMap) -> FileMap:
     """Download files to be moved to the new image host"""
     download_dir = context.path.download_dir
     download = context.downloader.download
 
-    def download_file(url, path):
+    def download_file(url: str, path: str) -> int:
         """Download a single file"""
         path_old = download_dir / "_old_" / path
         path_new = download_dir / "_new_" / path
@@ -561,28 +700,28 @@ def download_files(context: Namespace, files: dict) -> dict:
     count = len(files)
     with alive_bar(count, title="Downloads") as bar:
         for fileid, file in files.items():
-            if file["result"] == File.skipped:
+            if file.result == FileResult.skipped:
                 skipped += 1
                 continue
 
             # Full image/file
-            _size = download_file(file["url"], file["path"])
+            _size = download_file(file.url, file.path)
             if _size:
                 size += _size
                 downloaded += 1
-                file["result"] = File.downloaded
+                file.result = FileResult.downloaded
             else:
                 errors.add(fileid)
-                file["result"] = File.error
+                file.result = FileResult.error
 
             # Thumb image
-            if file["url_thumb"] and file["result"] is File.downloaded:
-                _size = download_file(file["url_thumb"], f"thumb/{file['path']}")
+            if file.url_thumb and file.result is FileResult.downloaded:
+                _size = download_file(file.url_thumb, f"thumb/{file.path}")
                 if _size:
                     size += _size
                 else:
                     errors.add(fileid)
-                    file["result"] = File.error
+                    file.result = FileResult.error
 
             bar(1)
 
@@ -593,14 +732,14 @@ def download_files(context: Namespace, files: dict) -> dict:
     if errors:
         print("Downloads: ! Errors (probably old deleted images):")
         for fileid in sorted(errors):
-            print(f" {files[fileid]['pids']} {files[fileid]['url']}")
+            print(f" {files[fileid].pids} {files[fileid].url}")
 
     print(f"Skipped {skipped} images/files and downloaded {downloaded} ({friendly_size(size)})")
 
     return files
 
 
-def summarize(context: Namespace, files: dict, legacy: bool = False) -> None:
+def summarize(context: Context, files: FileMap, legacy: bool = False) -> None:
     """Generate final output results from the merge of the results from processing
     the content export and the list_posts API.
     """
@@ -612,14 +751,14 @@ def summarize(context: Namespace, files: dict, legacy: bool = False) -> None:
     # Collect set of all post ids that should be skipped
     posts_to_skip = set()
     for file in files.values():
-        if file["result"] is File.skipped:
-            posts_to_skip.update(file["pids"])
+        if file.result is FileResult.skipped:
+            posts_to_skip.update(file.pids)
 
     # Generate reverse map of post_ids to fileids but exclude posts that
     # are in set of posts_to_skip
     posts_to_process = defaultdict(set)
     for fileid, file in files.items():
-        for pid in file["pids"]:
+        for pid in file.pids:
             if pid not in posts_to_skip:
                 posts_to_process[pid].add(fileid)
     postcount = len(posts_to_process)
@@ -660,12 +799,12 @@ def summarize(context: Namespace, files: dict, legacy: bool = False) -> None:
             files_output = csv.writer(f)
             files_output.writerow(fieldnames)
             for fileid, file in files.items():
-                pids = file["pids"]
-                url = file["url"]
-                url_thumb = file["url_thumb"]
-                url_file = file["url_file"]
-                new_url = file.get("new_url", "")  # for legacy link updates
-                result = file["result"].value if file["result"] else 0
+                pids = file.pids
+                url = file.url
+                url_thumb = file.url_thumb
+                url_file = file.url_file
+                new_url = file.new_url  # for legacy link updates
+                result = file.result.value
                 files_output.writerow([fileid, pids, url, url_thumb, url_file, new_url, result])
                 bar()
 
@@ -676,7 +815,7 @@ def rewrite_post_content(
     *,
     message: str,
     image_urls: list[str],
-    files: dict[str, dict],
+    files: FileMap,
     legacy: bool,
     new_url_func: Callable[[str], str],
 ) -> tuple[str, set[str]]:
@@ -696,19 +835,19 @@ def rewrite_post_content(
 
         # Updating legacy link
         if legacy:
-            if file.get("new_url"):
-                new_message = new_message.replace(url, file["new_url"])
+            if file.new_url:
+                new_message = new_message.replace(url, file.new_url)
                 touched_urls.add(url)
             continue
 
         # De-link missing file (discovered during download)
-        if file["result"] is File.error:
+        if file.result is FileResult.error:
             new_message = remove_bad_url(new_message, url)
             touched_urls.add(url)
             continue
 
         # Skip files that were skipped during download
-        if file["result"] is File.skipped:
+        if file.result is FileResult.skipped:
             continue
 
         # Replace file url with new url
@@ -725,10 +864,10 @@ def rewrite_post_content(
                 touched_urls.add(full_url)
 
         # Toolbox sometimes uses a special "/file?id=" link
-        if file["url_file"]:
-            new_full_url = new_url_func(file["url"])
-            new_message = new_message.replace(file["url_file"], new_full_url)
-            touched_urls.add(file["url"])
+        if file.url_file:
+            new_full_url = new_url_func(file.url)
+            new_message = new_message.replace(file.url_file, new_full_url)
+            touched_urls.add(file.url)
 
     return new_message, touched_urls
 
@@ -736,7 +875,7 @@ def rewrite_post_content(
 def build_update_plan(
     *,
     posts_path: Path,
-    files: dict[str, dict],
+    files: FileMap,
     legacy: bool,
     new_url_func: Callable[[str], str],
 ) -> tuple[Path, list[str], set[str]]:
@@ -789,7 +928,7 @@ def build_update_plan(
 
 
 def apply_update_plan(
-    *, context: Namespace, plan_path: Path
+    *, context: Context, plan_path: Path
 ) -> tuple[int, int, set[str], set[str], set[str]]:
     """Apply (or simulate) the planned updates, streaming the plan from disk.
 
@@ -845,7 +984,7 @@ def apply_update_plan(
     return posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors
 
 
-def update_posts(context: Namespace, legacy: bool = False) -> None:
+def update_posts(context: Context, legacy: bool = False) -> None:
     """Update posts given by `posts.csv` output from last `download` run"""
     dry_run = context.dry_run
     old_prefix = context.config.old_url
@@ -860,13 +999,12 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
     # Load file data from output_results, keyed by any urls found in posts
-    files = {}
+    files: FileMap = {}
     for row in read_csv(files_path):
-        row["pids"] = literal_eval(row["pids"])
-        row["result"] = File(int(row["result"]))
-        files[row["url"]] = row
-        if row["url_thumb"]:
-            files[row["url_thumb"]] = row
+        file = ForumFile.from_csv_row(row)
+        files[file.url] = file
+        if file.url_thumb:
+            files[file.url_thumb] = file
 
     # If new_urls don't work, abort
     if not check_new_urls(context, files):
@@ -891,7 +1029,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
         # Final interactive confirmation in APPLY mode (remote changes).
         total_posts = max(0, linecount(posts_path) - 1)
         posts_to_update = max(0, linecount(plan_path))
-        if not dry_run and posts_to_update and not getattr(context.args, "yes", False):
+        if not dry_run and posts_to_update and not context.args.yes:
             action = "update legacy links in posts" if legacy else "update posts"
 
             print("---- APPLY MODE: REMOTE CHANGES ----")
@@ -912,7 +1050,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
             print(f"  unique URLs touched: {len(urls_touched)}")
 
             if not legacy:
-                est_fileids = len({files[url]["fileid"] for url in urls_touched if url in files})
+                est_fileids = len({files[url].fileid for url in urls_touched if url in files})
                 print(f"  estimated delete candidates (fileids): {est_fileids}")
 
             if not confirm(context, "Type UPDATE to confirm: ", "UPDATE"):
@@ -940,7 +1078,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
     # accidentally use them.
     urls_to_delete_final = set() if legacy else (urls_to_delete - urls_to_keep)
     files_to_delete = [files[url] for url in urls_to_delete_final if url in files]
-    fileids_to_delete = {file["fileid"] for file in files_to_delete}
+    fileids_to_delete = {file.fileid for file in files_to_delete}
 
     if dry_run or legacy:
         deletes_output_path.write_text(json.dumps([]))
@@ -967,7 +1105,7 @@ def update_posts(context: Namespace, legacy: bool = False) -> None:
             raise Exception()
 
 
-def delete_files(context: Namespace) -> None:
+def delete_files(context: Context) -> None:
     """Delete Toolbox images given by set of fileids.
 
     There is no API endpoint for deleting files so this instead uses the
@@ -993,7 +1131,7 @@ def delete_files(context: Namespace) -> None:
         print("Delete files: no fileids listed; nothing to do.")
         return
 
-    if not getattr(context.args, "yes", False):
+    if not context.args.yes:
         preview = ", ".join(str(x) for x in fileids_to_delete[:10])
         more = "" if len(fileids_to_delete) <= 10 else f"... (+{len(fileids_to_delete) - 10} more)"
         print(f"About to permanently delete {len(fileids_to_delete)} files from Toolbox.")
@@ -1003,7 +1141,7 @@ def delete_files(context: Namespace) -> None:
     if not confirm(context, "Type DELETE to confirm: ", "DELETE"):
         return
 
-    successes: list = []
+    successes: list[str] = []
     count = len(fileids_to_delete)
 
     try:
@@ -1021,7 +1159,7 @@ def delete_files(context: Namespace) -> None:
     print(f"Delete files: {count} deleted")
 
 
-def check_new_urls(context: Namespace, files: dict) -> bool:
+def check_new_urls(context: Context, files: FileMap) -> bool:
     """Check new urls for file/image urls given by posts in `posts.csv` output
     from last `output_results` run. If any are inaccessible then return False.
 
@@ -1057,12 +1195,12 @@ def check_new_urls(context: Namespace, files: dict) -> bool:
     with alive_bar(count, title="Check new urls") as bar:
         for row in read_csv(posts_path):
             for url in literal_eval(row["image_urls"]):
-                urldata = files.get(url, {})
-                result = urldata.get("result")
-                if url in seen or result in (File.skipped, File.error):
+                file = files.get(url)
+                result = file.result if file else FileResult.default
+                if url in seen or result in (FileResult.skipped, FileResult.error):
                     continue
                 seen.add(url)
-                new_url = urldata.get("new_url") or new_url_func(url)
+                new_url = file.new_url if file and file.new_url else new_url_func(url)
                 if not url_ok(new_url):
                     images_errors.add(new_url)
                     if stop_fast:
@@ -1083,7 +1221,7 @@ def check_new_urls(context: Namespace, files: dict) -> bool:
     return not images_errors
 
 
-def check_urls_in_old_folder(context: Namespace) -> None:
+def check_urls_in_old_folder(context: Context) -> None:
     """This function is just a helpful diagnostic to confirm that all images
     in the '{context.path.download_dir}/_old_/' folder can be found in the new
     image host location.
@@ -1119,7 +1257,7 @@ def check_urls_in_old_folder(context: Namespace) -> None:
     # to be quoted twice to protect special characters through the proxy.
     fixpath = double_quote if "?" in new_prefix else (lambda x: x)
 
-    def iter_old_files():
+    def iter_old_files() -> Iterator[tuple[Path, str]]:
         for p in old_dir.rglob("*"):
             if not p.is_file():
                 continue
@@ -1211,7 +1349,9 @@ def grep_urls_in_file(updates_path: Path, urls: list[str]) -> str:
                 pass
 
 
-def check_old_urls(context: Namespace, files_to_check: list, legacy: bool = False) -> bool:
+def check_old_urls(
+    context: Context, files_to_check: Iterable[ForumFile], legacy: bool = False
+) -> bool:
     """Check if any old_urls are still found in updated posts (and in posts
     not updated).
 
@@ -1231,8 +1371,8 @@ def check_old_urls(context: Namespace, files_to_check: list, legacy: bool = Fals
     urls = set()
     fileids = set()
     for f in files_to_check:
-        urls.update([f["url"], f["url_thumb"]])
-        fileids.update([rf"={f['fileid']}", rf"/{f['fileid']}/"])
+        urls.update([f.url, f.url_thumb])
+        fileids.update([rf"={f.fileid}", rf"/{f.fileid}/"])
     urls.discard("")
 
     found_in_updated = []
@@ -1265,17 +1405,19 @@ def check_old_urls(context: Namespace, files_to_check: list, legacy: bool = Fals
     return not bool(found_in_updated or found_in_nonupdated)
 
 
-def get_new_url_func(old_prefix: str, thumb_prefix: str, new_prefix: str):
+def get_new_url_func(
+    old_prefix: str, thumb_prefix: str | None, new_prefix: str
+) -> Callable[[str], str]:
     """Return 'new_url_func' function with the appropriate 'fixpath' change to the
     path for the case where the old url or new url contains a parameter string.
     In this case, the parameter string may need to be quoted (or unquoted) to
     escape special characters (or unescape) that aren't expected in a parameter.
     """
 
-    def is_special(path):
+    def is_special(path: str) -> bool:
         return "#" in path or "?" in path
 
-    def safe_quote(path):
+    def safe_quote(path: str) -> str:
         """Unquote before quoting... to catch cases where the path is already quoted
         but if the unquoted string contains a '#', let's double-quote it, otherwise
         the server will interpret this as a fragment. This is done to retain the quoted
@@ -1312,7 +1454,7 @@ def get_new_url_func(old_prefix: str, thumb_prefix: str, new_prefix: str):
     return new_url_func
 
 
-def find_urls_func(prefix: str | tuple[str, str]):
+def find_urls_func(prefix: str | tuple[str, str]) -> Callable[[str], list[str]]:
     """Return 'find_urls' function that returns a list of image urls found in a
     string that starts with any of the expected url prefixes.
 
@@ -1466,7 +1608,7 @@ def batched(iterable, n):
         yield batch
 
 
-def read_csv(path: Path) -> Iterator:
+def read_csv(path: Path) -> Iterator[dict[str, str]]:
     """A generator that returns the rows of a csv file, one row at a time.
     Each row is cast as a dictionary with keys corresponding to the column names
     in the first row.
@@ -1480,7 +1622,7 @@ def read_csv(path: Path) -> Iterator:
             yield row
 
 
-def rotate_output_archive(context: Namespace, count: int = 10) -> None:
+def rotate_output_archive(context: Context, count: int = 10) -> None:
     """Archive the output folder and rotate the archives, keeping the last
     'count' archives.
     """
@@ -1499,9 +1641,9 @@ def rotate_output_archive(context: Namespace, count: int = 10) -> None:
                 shutil.rmtree(path)
 
 
-def confirm(context: Namespace, prompt: str, token: str) -> bool:
+def confirm(context: Context, prompt: str, token: str) -> bool:
     """Require an interactive confirmation unless --yes was provided."""
-    if getattr(context.args, "yes", False):
+    if context.args.yes:
         return True
     try:
         typed = input(prompt).strip()
@@ -1514,7 +1656,7 @@ def confirm(context: Namespace, prompt: str, token: str) -> bool:
     return True
 
 
-def log(context: Namespace, text: str | None = None) -> None:
+def log(context: Context, text: str | None = None) -> None:
     """Write text to log file. Defaults to just logging the current command."""
     now = datetime.now().isoformat(sep=" ")
     txt = text if text else " ".join(sys.argv)
@@ -1522,67 +1664,48 @@ def log(context: Namespace, text: str | None = None) -> None:
         log.write(f"{now} {txt}\n")
 
 
-def config() -> Namespace:
-    """Collect the config from environment variables.
+def config() -> Config:
+    """Collect typed config from dotenv files and TOOLBOX_* environment variables.
 
-    This leverages the `dotenv` library to collect default values from .env
-    files in the current working directory which can then be overridden by
-    the values collected from the environment. The checked-in template files
-    document these settings; the local `.env` and `.env.secrets` files are
-    ignored by source control.
-
-    Variable names in the environment should be prefixed by 'TOOLBOX_'.
-    This prefix is stripped and the names then lowercased before being
-    merged with the default values collected from .env files.
+    Values from `.env.secrets` override `.env`, and process environment values
+    prefixed with `TOOLBOX_` override both files.
     """
-    env: dict[str, str | None] = {k.lower(): v for k, v in dotenv_values(".env").items()}
-    env_secrets: dict[str, str | None] = {
-        k.lower(): v for k, v in dotenv_values(".env.secrets").items()
-    }
+    env = {k.lower(): v for k, v in dotenv_values(".env").items()}
+    env_secrets = {k.lower(): v for k, v in dotenv_values(".env.secrets").items()}
 
     prefix = "TOOLBOX_"
     length = len(prefix)
     environ = {k[length:].lower(): v for k, v in os.environ.items() if k.startswith(prefix)}
 
-    return Namespace(**{**env, **env_secrets, **environ})
+    return Config.from_mapping({**env, **env_secrets, **environ})
 
 
-def paths(config: Namespace) -> Namespace:
-    """Generate pathlib Paths for all paths specified by config"""
-    dirs = ("export_dir", "download_dir", "output_dir")
-    output_files = ("posts_from_export", "posts_from_api", "posts", "files", "updates")
+def paths(config: Config) -> Paths:
+    """Generate the local and derived paths used by the migration."""
+    dirs = (config.export_dir, config.download_dir, config.output_dir)
 
-    # Collect directory paths and ensure they exist.
-    paths = {name: Path(getattr(config, name)) for name in dirs}
-    for path in paths.values():
-        # Don't create 'parents' as that might allow bad settings to create
-        # directories in unexpected locations. We could maybe do better
-        # by enforcing only a single folder name for each path setting but
-        # this is probably good enough for now.
+    # Don't create parents: a typo should not create an unexpected directory tree.
+    for path in dirs:
         path.mkdir(exist_ok=True)
 
-    for name in output_files:
-        paths[name] = paths["output_dir"] / f"{name}.csv"
-    paths["fileids_to_delete"] = paths["output_dir"] / "fileids_to_delete.json"
-
-    # In dry-run, we record the fileids that *would* be deleted here, without
-    # enabling a subsequent accidental delete run to use them.
-    paths["fileids_to_delete_dry_run"] = paths["output_dir"] / "fileids_to_delete.dry_run.json"
-
-    paths["log"] = paths["output_dir"] / "log.txt"
-
-    return Namespace(**paths)
-
-
-class File(Enum):
-    default = 0
-    skipped = 1
-    downloaded = 2
-    error = 3
+    output_dir = config.output_dir
+    return Paths(
+        export_dir=config.export_dir,
+        download_dir=config.download_dir,
+        output_dir=output_dir,
+        posts_from_export=output_dir / "posts_from_export.csv",
+        posts_from_api=output_dir / "posts_from_api.csv",
+        posts=output_dir / "posts.csv",
+        files=output_dir / "files.csv",
+        updates=output_dir / "updates.csv",
+        fileids_to_delete=output_dir / "fileids_to_delete.json",
+        fileids_to_delete_dry_run=output_dir / "fileids_to_delete.dry_run.json",
+        log=output_dir / "log.txt",
+    )
 
 
 class BaseClient:
-    def __init__(self, context: Namespace):
+    def __init__(self, context: Context):
         self.context = context
 
     def _require_apply(self, action: str) -> None:
@@ -1612,7 +1735,7 @@ class Downloader(BaseClient):
 
 
 class AdminClient(BaseClient):
-    def __init__(self, context: Namespace):
+    def __init__(self, context: Context):
         super().__init__(context)
         admin_url = context.config.admin_url.rstrip("/")
         self.dashboard_endpoint = f"{admin_url}/dashboard"
@@ -1631,7 +1754,7 @@ class AdminClient(BaseClient):
             return resp.ok
 
     @cached_property
-    def hidden_defaults(self) -> dict:
+    def hidden_defaults(self) -> dict[str, str]:
         """Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)"""
         get = self.context.session.get
         url = self.files_endpoint
@@ -1645,7 +1768,7 @@ class AdminClient(BaseClient):
                     hidden[i["name"]] = i.get("value", "")
             return hidden
 
-    def delete_files(self, fileids) -> bool:
+    def delete_files(self, fileids: list[str]) -> bool:
         self._require_apply(f"delete_files count={len(fileids)}")
         post = self.context.session.post
         url = self.delete_endpoint
@@ -1657,7 +1780,7 @@ class AdminClient(BaseClient):
 
 
 class APIClient(BaseClient):
-    def __init__(self, context: Namespace):
+    def __init__(self, context: Context):
         super().__init__(context)
         api_url = context.config.api_url
         self.posts_endpoint = f"{api_url}/api/posts"
@@ -1709,7 +1832,7 @@ class APIClient(BaseClient):
             if self.context.dry_run and params["page"] > 2:
                 return
 
-    def update_post(self, pid: str, message: str):
+    def update_post(self, pid: str, message: str) -> bool:
         """Call the "Update Post" API endpoint to update a post message."""
         self._require_apply(f"update_post pid={pid}")
         post = self.context.session.post
