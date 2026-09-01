@@ -1,5 +1,5 @@
 [project]
-name = "toolbox-images-script"
+name = "toolbox-images-migration"
 version = "0.2.0"
 description = "A utility to relocate images from a Website Toolbox forum"
 readme = "README.md"
@@ -20,7 +20,7 @@ dependencies = [
 toolbox = "toolbox.cli:main"
 
 [project.urls]
-Repository = "https://github.com/newbery/toolbox-images-script"
+Repository = "https://github.com/newbery/toolbox-images-migration"
 
 [dependency-groups]
 dev = [

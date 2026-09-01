@@ -40,8 +40,8 @@ many posts are updated.
 
 ```bash
 # 1. Clone the repository.
-git clone https://github.com/newbery/toolbox-images-script.git
-cd toolbox-images-script
+git clone https://github.com/newbery/toolbox-images-migration.git
+cd toolbox-images-migration
 
 # 2. Install the project and activate the virtualenv.
 poetry install
