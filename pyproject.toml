@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-toolbox = "toolbox.toolbox:main"
+toolbox = "toolbox.cli:main"
 
 [project.urls]
 Repository = "https://github.com/newbery/toolbox-images-script"

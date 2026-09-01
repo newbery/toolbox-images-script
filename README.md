@@ -71,12 +71,6 @@ toolbox --apply update_posts
 toolbox --apply delete_files
 ```
 
-The same CLI can also be invoked as a module:
-
-```bash
-python -m toolbox --help
-```
-
 Run `toolbox --help` for the complete list of modes and safety flags.
 
 
@@ -96,6 +90,7 @@ The precedence is:
 1. explicit `--apply` or `--dry-run` CLI flag;
 2. `DRY_RUN` from `.env`, `.env.secrets`, or the environment;
 3. dry-run if no setting is supplied.
+
 
 ## Configuration
 

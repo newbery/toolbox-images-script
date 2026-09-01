@@ -1,1 +1,3 @@
-"""Website Toolbox image migration utility."""
+"""
+Website Toolbox image migration utility.
+"""

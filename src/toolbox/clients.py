@@ -1,0 +1,152 @@
+"""
+Website Toolbox HTTP clients.
+"""
+
+import time
+from functools import cached_property
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:
+    from .context import Context
+
+
+class BaseClient:
+    def __init__(self, context: "Context"):
+        self.context = context
+
+    def _require_apply(self, action: str) -> None:
+        """Refuse to run destructive operations unless explicitly applied."""
+        if self.context.dry_run:
+            raise RuntimeError(
+                f"Refusing destructive action in dry-run: {action}. "
+                "Re-run with --apply (or set TOOLBOX_DRY_RUN=false) to execute."
+            )
+
+
+class Downloader(BaseClient):
+    def download(self, url: str, path: Path) -> int:
+        get = self.context.session.get
+        with get(url, stream=True, timeout=60) as resp:
+            if resp.status_code == 200:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("wb") as f:
+                    for chunk in resp.iter_content(1024):
+                        if chunk:
+                            f.write(chunk)
+                cl = resp.headers.get("Content-Length")
+                size = int(cl) if cl is not None else path.stat().st_size
+            else:
+                size = 0
+        return size
+
+
+class AdminClient(BaseClient):
+    def __init__(self, context: "Context"):
+        super().__init__(context)
+        admin_url = context.config.admin_url.rstrip("/")
+        self.dashboard_endpoint = f"{admin_url}/dashboard"
+        self.delete_endpoint = f"{admin_url}/mb/uploading"
+        self.files_endpoint = f"{admin_url}/mb/uploading/files"
+        self.headers = {
+            "Cookie": context.config.admin_cookie,
+            "Referer": self.files_endpoint,
+        }
+
+    def check_admin_auth(self) -> bool:
+        """Check that the Admin cookie in config is valid. If not, return False."""
+        get = self.context.session.get
+        url = self.dashboard_endpoint
+        with get(url, headers=self.headers, timeout=30) as resp:
+            return resp.ok
+
+    @cached_property
+    def hidden_defaults(self) -> dict[str, str]:
+        """Pull hidden defaults from the real page (trail/sort/reverse/loadedUsername)"""
+        get = self.context.session.get
+        url = self.files_endpoint
+        with get(url, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            form = soup.find("form", {"id": "frmFiles"})
+            hidden = {}
+            if form:
+                for i in form.select('input[type="hidden"][name]'):
+                    hidden[i["name"]] = i.get("value", "")
+            return hidden
+
+    def delete_files(self, fileids: list[str]) -> bool:
+        self._require_apply(f"delete_files count={len(fileids)}")
+        post = self.context.session.post
+        url = self.delete_endpoint
+        defaults = list(self.hidden_defaults.items()) + [("action", "deleteFiles")]
+        data = defaults + [("deleteimg", fileid) for fileid in fileids]
+        with post(url, data=data, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            return resp.ok
+
+
+class APIClient(BaseClient):
+    def __init__(self, context: "Context"):
+        super().__init__(context)
+        api_url = context.config.api_url
+        self.posts_endpoint = f"{api_url}/api/posts"
+        self.headers = {
+            "Accept": "application/json",
+            "x-api-key": context.config.api_key,
+            "x-api-username": context.config.api_username,
+        }
+
+    def check_api_auth(self) -> bool:
+        """Check that the API key/username in config are valid. If not, return False."""
+        get = self.context.session.get
+        url = self.posts_endpoint
+        params = {"limit": 1}
+        with get(url, params=params, headers=self.headers, timeout=30) as resp:
+            return resp.ok
+
+    def list_posts(self):
+        """A generator that returns the results of the "List Posts" API call
+        one response 'page' at a time. Each page contains up to 100 posts.
+
+        This API call returns the most recent posts first. We can stop once we
+        reach a post that has already been processed (via `posts_from_export`).
+        Once this condition is reached, call 'close()' on the iterator returned
+        by this generator and continue to next iteration which will end it.
+        """
+        params = {"limit": 100, "page": 1}
+        get = self.context.session.get
+        url = self.posts_endpoint
+
+        with get(url, params=params, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            response = resp.json()
+            yield response
+
+        while response["has_more"]:
+            params["page"] += 1
+            with get(url, params=params, headers=self.headers, timeout=30) as resp:
+                resp.raise_for_status()
+                response = resp.json()
+                yield response
+
+            # Throttle the requests
+            # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
+            time.sleep(1)
+
+            # Each request counts as a page view
+            # so just do 3 requests (300 posts) during test runs
+            if self.context.dry_run and params["page"] > 2:
+                return
+
+    def update_post(self, pid: str, message: str) -> bool:
+        """Call the "Update Post" API endpoint to update a post message."""
+        self._require_apply(f"update_post pid={pid}")
+        post = self.context.session.post
+        url = f"{self.posts_endpoint}/{pid}"
+        body = {"content": message}
+        with post(url, json=body, headers=self.headers, timeout=30) as resp:
+            resp.raise_for_status()
+            return resp.ok
