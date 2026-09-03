@@ -25,9 +25,11 @@ Repository = "https://github.com/newbery/toolbox-images-migration"
 [dependency-groups]
 dev = [
     "pytest>=9.0.0,<10.0.0",
+    "coverage (>=7.15.4,<8.0.0)",
     "ruff>=0.16.0,<0.17.0",
     "pyright>=1.1.0,<2.0.0",
     "pdbpp>=0.11.0,<1.0.0",
+    "poethepoet (>=0.48.0,<0.49.0)",
 ]
 
 [tool.poetry]
@@ -44,9 +46,13 @@ target-version = "py311"
 preview = true
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I", "S"]
-ignore = ["B903", "E501", "S101"]
-unfixable = ["F401"]
+select = ["E", "F", "B", "I", "S", "UP", "RUF", "PT"]
+ignore = [
+    "class-as-data-structure",
+    "line-too-long",
+    "assert",
+]
+unfixable = ["unused-import"]
 
 [tool.pyright]
 include = ["src"]
@@ -59,3 +65,32 @@ reportPrivateImportUsage = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+ignore_errors = true
+
+[tool.coverage.html]
+directory = "_coverage"
+
+[tool.poe.env]
+COVERAGE_REPORT = "file://${POE_ROOT}/_coverage/index.html"
+
+[tool.poe.tasks]
+check = ["poetry-check", "lint", "format-check", "typecheck", "test"]
+lint = "ruff check ."
+format = "ruff format ."
+format-check = "ruff format --check ."
+typecheck = "pyright"
+test = "pytest"
+
+coverage = [
+    { cmd = "coverage run -m pytest" },
+    { cmd = "coverage report" },
+    { cmd = "coverage html" },
+    { cmd = "python -m webbrowser -t ${COVERAGE_REPORT}" },
+]
+
+poetry-check = "poetry check"

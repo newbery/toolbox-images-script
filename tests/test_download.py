@@ -37,12 +37,12 @@ def test_download_files_marks_downloaded_and_errors(ctx, monkeypatch):
         ),
     }
     # Make download fail for one file
-    _download = ctx.downloader.download
+    download_ = ctx.downloader.download
 
     def fake_download(url, path_new):
         if str(url).endswith("1.jpg"):
             return 0
-        return _download(url, path_new)
+        return download_(url, path_new)
 
     ctx.downloader.download = fake_download  # type: ignore
     out = download.download_files(ctx, files)

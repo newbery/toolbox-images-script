@@ -58,9 +58,7 @@ def read_csv(path: Path) -> Iterator[dict[str, str]]:
         return
 
     with path.open(newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            yield row
+        yield from csv.DictReader(f)
 
 
 def rotate_output_archive(context: "Context", count: int = 10) -> None:

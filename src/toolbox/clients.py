@@ -81,7 +81,7 @@ class AdminClient(BaseClient):
         self._require_apply(f"delete_files count={len(fileids)}")
         post = self.context.session.post
         url = self.delete_endpoint
-        defaults = list(self.hidden_defaults.items()) + [("action", "deleteFiles")]
+        defaults = [*self.hidden_defaults.items(), ("action", "deleteFiles")]
         data = defaults + [("deleteimg", fileid) for fileid in fileids]
         with post(url, data=data, headers=self.headers, timeout=30) as resp:
             resp.raise_for_status()

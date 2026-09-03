@@ -27,7 +27,7 @@ class DummyAliveBar:
 def _patch_alive_bar(monkeypatch):
     for module in (cleanup, discovery, download, updates):
         monkeypatch.setattr(module, "alive_bar", DummyAliveBar)
-    yield
+    return
 
 
 def _config_for(tmp_path: Path, **changes) -> context.Config:

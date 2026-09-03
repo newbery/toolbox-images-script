@@ -151,13 +151,16 @@ def test_init_clients_configures_session_clients_and_url_ok(ctx, monkeypatch):
 
     # Mounts file:// adapter and sets UA header
     assert any(prefix == "file://" for prefix, _a in sess.mounted)
-    assert isinstance([a for p, a in sess.mounted if p == "file://"][0], FakeAdapter)
+    assert isinstance(next(a for p, a in sess.mounted if p == "file://"), FakeAdapter)
     assert sess.headers.get("User-Agent") == context.USER_AGENT
 
     # Attaches client helpers (constructor internals are not tested)
-    assert ctx.api_client is api_obj and created["api"] is ctx
-    assert ctx.admin_client is admin_obj and created["admin"] is ctx
-    assert ctx.downloader is dl_obj and created["dl"] is ctx
+    assert ctx.api_client is api_obj
+    assert created["api"] is ctx
+    assert ctx.admin_client is admin_obj
+    assert created["admin"] is ctx
+    assert ctx.downloader is dl_obj
+    assert created["dl"] is ctx
 
     # url_ok(): 200/206 => True, other codes => False; head args are fixed
     assert ctx.url_ok("http://ok.example") is True

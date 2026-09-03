@@ -36,7 +36,7 @@ def test_find_legacy_urls_in_img_and_link():
 
 
 @pytest.mark.parametrize(
-    "url, expected",
+    ("url", "expected"),
     [
         ("https://example.com/file?id=123", "123"),
         ("https://s3.amazonaws.com/files.websitetoolbox.com/999/123/a.jpg", "123"),

@@ -43,9 +43,9 @@ def download_files(context: Context, files: FileMap) -> FileMap:
                 continue
 
             # Full image/file
-            _size = download_file(file.url, file.path)
-            if _size:
-                size += _size
+            size_ = download_file(file.url, file.path)
+            if size_:
+                size += size_
                 downloaded += 1
                 file.result = FileResult.downloaded
             else:
@@ -54,9 +54,9 @@ def download_files(context: Context, files: FileMap) -> FileMap:
 
             # Thumb image
             if file.url_thumb and file.result is FileResult.downloaded:
-                _size = download_file(file.url_thumb, f"thumb/{file.path}")
-                if _size:
-                    size += _size
+                size_ = download_file(file.url_thumb, f"thumb/{file.path}")
+                if size_:
+                    size += size_
                 else:
                     errors.add(fileid)
                     file.result = FileResult.error

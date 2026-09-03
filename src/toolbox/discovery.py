@@ -3,7 +3,7 @@ Discover posts and Website Toolbox-hosted files.
 """
 
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 
 from .context import Context, alive_bar
@@ -114,8 +114,7 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
     probably better postponed.
     """
     test_post_id = context.config.test_post_id
-    utc = timezone.utc
-    last_date = datetime.now(utc) - timedelta(days=context.config.skip_days)
+    last_date = datetime.now(UTC) - timedelta(days=context.config.skip_days)
     prefix = context.config.old_url
     prefix_thumb = context.config.old_url_thumb
 
@@ -150,7 +149,7 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
             except Exception:
                 print("Bad date")
                 continue
-            if datetime.fromtimestamp(ts, utc) > last_date:
+            if datetime.fromtimestamp(ts, UTC) > last_date:
                 files_to_exclude.update(fileids)
 
         for fileid, url in pairs:
@@ -223,9 +222,9 @@ def files_from_export(context: Context, posts: PostMap) -> FileMap:
 
     if count != len(files):
         # This should not happen. So stop and figure it out.
-        missing = set(files) - seen
-        files_ = {k: v for k, v in files.items() if k in missing}  # noqa
-        # breakpoint()
         raise Exception
+        # missing = set(files) - seen
+        # files_ = {k: v for k, v in files.items() if k in missing}
+        # breakpoint()
 
     return files

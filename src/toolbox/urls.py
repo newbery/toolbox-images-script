@@ -44,7 +44,7 @@ def get_new_url_func(
     both_match = old_has_param is new_has_param
 
     if both_match:
-        fixpath = lambda x: x  # noqa
+        fixpath = noop
     elif old_has_param:
         fixpath = unquote
     else:
@@ -170,3 +170,7 @@ def remove_bad_url(text: str, bad_url: str) -> str:
                 link.attrs.pop("href", None)
             img.attrs.pop("src", None)
     return html.decode(formatter="html")
+
+
+def noop(x):
+    return x

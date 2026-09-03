@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from toolbox import discovery, io, models
 
@@ -102,7 +102,7 @@ def test_files_from_posts_skips_recent_or_nonmatching_test_post(ctx):
     ctx.config.old_url = "https://abc.cloudfront.net/"
     ctx.config.old_url_thumb = ""
     ctx.config.skip_days = 1  # skip anything newer than 1 day ago
-    now_ts = int(datetime.now(timezone.utc).timestamp())
+    now_ts = int(datetime.now(UTC).timestamp())
     posts = {
         "1": models.Post(date=str(now_ts), image_urls=["https://abc.cloudfront.net/1/111/a.jpg"])
     }

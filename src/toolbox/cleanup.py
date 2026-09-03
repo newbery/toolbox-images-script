@@ -97,7 +97,7 @@ def check_new_urls(context: Context, files: FileMap) -> bool:
     # If new_url is a local path then generate a local 'file://' url.
     # This only works in DRY_RUN since real post updates need public urls.
     if dry_run and not new_prefix.lower().startswith(("https://", "http://")):
-        new_prefix = f"file://{str(Path(new_prefix).resolve())}/"
+        new_prefix = f"file://{Path(new_prefix).resolve()!s}/"
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
@@ -300,8 +300,8 @@ def check_old_urls(
             bar(len(batch))
 
         for batch in batched(fileids, 10):
-            _fileids = "|".join(batch)
-            result = (grep["-Eh", _fileids, *posts_paths] | cut["-d,", "-f1"])(retcode=None)
+            fileids_ = "|".join(batch)
+            result = (grep["-Eh", fileids_, *posts_paths] | cut["-d,", "-f1"])(retcode=None)
             found_in_nonupdated += result.split()
             bar(len(batch))
         found_in_nonupdated = set(found_in_nonupdated) - set(found_in_updated)
