@@ -1,7 +1,7 @@
 from toolbox import download, io, models
 
 
-def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
+def test_download_files_marks_downloaded_and_errors(ctx, monkeypatch):
     """The `download_files` function should download files marked missing,
     update per-file result state to downloaded or error based on the download
     outcome, and preserve skipped entries.
@@ -18,7 +18,7 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
             path_new.write_bytes(b"abc")
             return 3
 
-    context_tmp.downloader = FakeDownloader()
+    ctx.downloader = FakeDownloader()
     files = {
         "1": models.ForumFile(fileid="1", url="https://x/1.jpg", path="1.jpg", pids={"p1"}),
         "2": models.ForumFile(
@@ -37,28 +37,28 @@ def test_download_files_marks_downloaded_and_errors(context_tmp, monkeypatch):
         ),
     }
     # Make download fail for one file
-    _download = context_tmp.downloader.download
+    _download = ctx.downloader.download
 
     def fake_download(url, path_new):
         if str(url).endswith("1.jpg"):
             return 0
         return _download(url, path_new)
 
-    context_tmp.downloader.download = fake_download  # type: ignore
-    out = download.download_files(context_tmp, files)
+    ctx.downloader.download = fake_download  # type: ignore
+    out = download.download_files(ctx, files)
     assert out["1"].result == models.FileResult.error
     assert out["2"].result == models.FileResult.downloaded
     assert out["3"].result == models.FileResult.skipped
 
 
-def test_summarize_writes_posts_and_files(context_tmp, write_csv):
+def test_summarize_writes_posts_and_files(ctx, write_csv):
     """The `summarize` function should write consolidated posts.csv and files.csv,
     excluding posts whose only referenced files are skipped/error according to
     the computed file results.
     """
     # posts_from_export and posts_from_api inputs
     write_csv(
-        context_tmp.path.posts_from_export,
+        ctx.path.posts_from_export,
         ["pid", "date", "image_urls", "message"],
         [
             ["1", "0", "[]", "<p>no</p>"],
@@ -71,7 +71,7 @@ def test_summarize_writes_posts_and_files(context_tmp, write_csv):
         ],
     )
     write_csv(
-        context_tmp.path.posts_from_api,
+        ctx.path.posts_from_api,
         ["pid", "date", "image_urls", "message"],
         [
             [
@@ -98,12 +98,12 @@ def test_summarize_writes_posts_and_files(context_tmp, write_csv):
             result=models.FileResult.skipped,
         ),
     }
-    download.summarize(context_tmp, files)
+    download.summarize(ctx, files)
 
-    posts_out = list(io.read_csv(context_tmp.path.posts))
+    posts_out = list(io.read_csv(ctx.path.posts))
 
     # pid 1 should be skipped due to skipped file
     assert [r["pid"] for r in posts_out] == ["2", "3"]
 
-    files_out = list(io.read_csv(context_tmp.path.files))
+    files_out = list(io.read_csv(ctx.path.files))
     assert any(r["fileid"] == "123" for r in files_out)

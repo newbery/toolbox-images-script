@@ -190,6 +190,23 @@ def apply_update_plan(
     return posts_updated, posts_would_update, urls_to_delete, urls_to_keep, posts_errors
 
 
+def select_files_to_delete(
+    *,
+    files: FileMap,
+    urls_to_delete: set[str],
+    urls_to_keep: set[str],
+) -> list[ForumFile]:
+    """Return unique Toolbox files safe to hand off to the delete command."""
+    blocked_fileids = {files[url].fileid for url in urls_to_keep if url in files}
+    candidates: dict[str, ForumFile] = {}
+    for url in urls_to_delete:
+        file = files.get(url)
+        if file is None or not file.url_file or file.fileid in blocked_fileids:
+            continue
+        candidates[file.fileid] = file
+    return [candidates[fileid] for fileid in sorted(candidates)]
+
+
 def update_posts(context: Context, legacy: bool = False) -> None:
     """Update posts given by `posts.csv` output from last `download` run"""
     dry_run = context.dry_run
@@ -201,6 +218,12 @@ def update_posts(context: Context, legacy: bool = False) -> None:
 
     updates_output_path = context.path.updates
     deletes_output_path = context.path.fileids_to_delete
+    dry_deletes_output_path = context.path.fileids_to_delete_dry_run
+
+    # A delete run consumes this file directly, so invalidate any previous
+    # handoff before doing work that might return early or raise.
+    deletes_output_path.write_text(json.dumps([]), encoding="utf-8")
+    dry_deletes_output_path.write_text(json.dumps([]), encoding="utf-8")
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
@@ -256,7 +279,11 @@ def update_posts(context: Context, legacy: bool = False) -> None:
             print(f"  unique URLs touched: {len(urls_touched)}")
 
             if not legacy:
-                est_fileids = len({files[url].fileid for url in urls_touched if url in files})
+                est_fileids = len({
+                    files[url].fileid
+                    for url in urls_touched
+                    if url in files and files[url].url_file
+                })
                 print(f"  estimated delete candidates (fileids): {est_fileids}")
 
             if not confirm(context, "Type UPDATE to confirm: ", "UPDATE"):
@@ -283,14 +310,21 @@ def update_posts(context: Context, legacy: bool = False) -> None:
     # write them to a separate file so a subsequent delete run won't
     # accidentally use them.
     urls_to_delete_final = set() if legacy else (urls_to_delete - urls_to_keep)
-    files_to_delete = [files[url] for url in urls_to_delete_final if url in files]
+    files_to_delete = select_files_to_delete(
+        files=files,
+        urls_to_delete=urls_to_delete_final,
+        urls_to_keep=urls_to_keep,
+    )
     fileids_to_delete = {file.fileid for file in files_to_delete}
 
     if dry_run or legacy:
-        deletes_output_path.write_text(json.dumps([]))
-        context.path.fileids_to_delete_dry_run.write_text(json.dumps(sorted(fileids_to_delete)))
+        dry_deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)), encoding="utf-8")
     else:
-        deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)))
+        # Publish the destructive handoff only after the final reference scan passes.
+        if files_to_delete and not check_old_urls(context, files_to_delete):
+            print("! WARNING: At least one old_url or fileid was found in the posts")
+            raise RuntimeError("Old Toolbox references remain after updating posts")
+        deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)), encoding="utf-8")
 
     if posts_errors:
         print("! Errors attempting to update the following posts:")
@@ -302,10 +336,3 @@ def update_posts(context: Context, legacy: bool = False) -> None:
         print(f"Dry-run delete candidates written to: {context.path.fileids_to_delete_dry_run}")
     else:
         print(f"Update posts: {posts_updated} updated")
-
-    # If old_urls still exist, warn the user (only relevant after a real update).
-    if not dry_run and not legacy:
-        if not check_old_urls(context, files_to_delete):
-            print("! WARNING: At least one old_url or fileid was found in the posts")
-            # raise an exception so it's obvious something is amiss
-            raise Exception()

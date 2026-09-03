@@ -57,7 +57,7 @@ def config_for():
 
 
 @pytest.fixture
-def context_tmp(tmp_path) -> context.Context:
+def ctx(tmp_path) -> context.Context:
     export_dir = tmp_path / "export"
     download_dir = tmp_path / "downloads"
     output_dir = tmp_path / "out"
@@ -66,13 +66,10 @@ def context_tmp(tmp_path) -> context.Context:
     output_dir.mkdir()
 
     cfg = _config_for(tmp_path)
+    path = context.paths(cfg)
+    args = models.CliArgs(mode="download_files", dry_run=True, yes=True)
 
-    return context.Context(
-        args=models.CliArgs(mode="download_files", dry_run=True, yes=True),
-        config=cfg,
-        path=context.paths(cfg),
-        dry_run=True,
-    )
+    return context.Context(args=args, config=cfg, path=path, dry_run=True)
 
 
 @pytest.fixture

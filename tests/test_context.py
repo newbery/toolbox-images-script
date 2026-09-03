@@ -98,7 +98,7 @@ def test_init_context_cli_apply_overrides_config(tmp_path, monkeypatch, config_f
     assert ctx.dry_run is False
 
 
-def test_init_clients_configures_session_clients_and_url_ok(context_tmp, monkeypatch):
+def test_init_clients_configures_session_clients_and_url_ok(ctx, monkeypatch):
     """The `init_clients` function should mount FileAdapter for file://,
     set User-Agent, attach client helpers, and expose the `url_ok` function
     that accepts 200/206 and rejects other status codes.
@@ -144,7 +144,6 @@ def test_init_clients_configures_session_clients_and_url_ok(context_tmp, monkeyp
     )
     monkeypatch.setattr(context, "Downloader", lambda ctx: created.__setitem__("dl", ctx) or dl_obj)
 
-    ctx = context_tmp
     sess = FakeSession()
     out = context.init_clients(ctx, session=sess)
     assert out is ctx
@@ -167,7 +166,7 @@ def test_init_clients_configures_session_clients_and_url_ok(context_tmp, monkeyp
     assert sess.head_calls[0] == ("http://ok.example", True, 30)
 
 
-def test_init_clients_creates_session_when_none(context_tmp, monkeypatch):
+def test_init_clients_creates_session_when_none(ctx, monkeypatch):
     """The `init_clients` function should create a `requests.Session` when session
     is None and store it on `context.session`.
     """
@@ -198,7 +197,6 @@ def test_init_clients_creates_session_when_none(context_tmp, monkeypatch):
     monkeypatch.setattr(context, "AdminClient", lambda ctx: object())
     monkeypatch.setattr(context, "Downloader", lambda ctx: object())
 
-    ctx = context_tmp
     context.init_clients(ctx, session=None)
 
     assert isinstance(ctx.session, FakeSession)

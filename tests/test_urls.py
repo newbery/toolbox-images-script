@@ -61,6 +61,7 @@ def test_remove_bad_url_de_links_image_and_adds_notice():
     bad = "https://old.example.com/999/missing.jpg"
     html = f'<p><a href="{bad}"><img src="{bad}"/></a> hello</p>'
     out = urls.remove_bad_url(html, bad)
+
     # src and href should be removed
     assert 'src="' not in out
     assert 'href="' not in out
@@ -97,6 +98,7 @@ def test_get_new_url_func_handles_param_quote_unquote():
         thumb_prefix="",
         new_prefix="https://new.example.com/?url=",
     )
+
     # '#' should remain quoted so it doesn't become a fragment
     out = f("https://old.example.com/a#b.jpg")
     assert out.startswith("https://new.example.com/?url=")

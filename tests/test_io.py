@@ -111,7 +111,7 @@ def test_rotate_output_archive_rotates_and_prunes(tmp_path, monkeypatch, config_
     assert len(dirs) <= 3  # old pruned + new archive (timestamp) + maybe some remain
 
 
-def test_log_writes_line(context_tmp, monkeypatch):
+def test_log_writes_line(ctx, monkeypatch):
     """The `log` function should append a timestamped line containing the
     provided message to the run's log file.
     """
@@ -122,7 +122,7 @@ def test_log_writes_line(context_tmp, monkeypatch):
             return datetime(2020, 1, 2, 3, 4, 5)
 
     monkeypatch.setattr(io, "datetime", FixedDateTime)
-    io.log(context_tmp, text="hello")
-    txt = context_tmp.path.log.read_text(encoding="utf-8")
+    io.log(ctx, text="hello")
+    txt = ctx.path.log.read_text(encoding="utf-8")
     assert "hello" in txt
     assert "2020-01-02" in txt
