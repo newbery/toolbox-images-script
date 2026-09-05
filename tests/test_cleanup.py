@@ -100,6 +100,61 @@ def test_check_old_urls_detects_in_updated_or_nonupdated(ctx, tmp_path, write_cs
     assert ok is False
 
 
+def test_check_old_urls_detects_url_file_in_updated_post(ctx, write_csv):
+    """The final check should detect surviving /file?id=... references."""
+    write_csv(
+        ctx.path.updates,
+        ["pid", "result", "content"],
+        [["10", "success", "contains /file?id=123"]],
+    )
+    write_csv(
+        ctx.path.posts_from_export,
+        ["pid", "date", "image_urls", "message"],
+        [["20", "0", "[]", "no legacy reference"]],
+    )
+    write_csv(
+        ctx.path.posts_from_api,
+        ["pid", "date", "image_urls", "message"],
+        [["21", "0", "[]", "no legacy reference"]],
+    )
+    files_to_check = [
+        models.ForumFile(
+            fileid="123",
+            url="https://old.example.com/123/a.jpg",
+            url_file="/file?id=123",
+        ),
+    ]
+
+    assert cleanup.check_old_urls(ctx, files_to_check, legacy=False) is False
+
+
+def test_check_old_urls_escapes_fileids_used_as_regex(ctx, write_csv):
+    """Regex metacharacters in file IDs should be matched literally."""
+    write_csv(
+        ctx.path.updates,
+        ["pid", "result", "content"],
+        [["10", "success", "no legacy reference"]],
+    )
+    write_csv(
+        ctx.path.posts_from_export,
+        ["pid", "date", "image_urls", "message"],
+        [["20", "0", "[]", "similar but different =12x34 reference"]],
+    )
+    write_csv(
+        ctx.path.posts_from_api,
+        ["pid", "date", "image_urls", "message"],
+        [["21", "0", "[]", "no legacy reference"]],
+    )
+    files_to_check = [
+        models.ForumFile(
+            fileid="12.34",
+            url="https://old.example.com/12.34/a.jpg",
+        ),
+    ]
+
+    assert cleanup.check_old_urls(ctx, files_to_check, legacy=False) is True
+
+
 def test_delete_files_batches_and_calls_client(ctx, monkeypatch):
     """The `delete_files` function should load `fileids_to_delete.json` and invoke
     the admin client's `delete_files` in batches of 100 fileids.

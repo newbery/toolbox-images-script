@@ -3,6 +3,7 @@ Verify migrated URLs and remove obsolete Website Toolbox files.
 """
 
 import json
+import re
 import shutil
 import tempfile
 import time
@@ -285,8 +286,9 @@ def check_old_urls(
     urls = set()
     fileids = set()
     for f in files_to_check:
-        urls.update([f.url, f.url_thumb])
-        fileids.update([rf"={f.fileid}", rf"/{f.fileid}/"])
+        urls.update([f.url, f.url_thumb, f.url_file])
+        fileid = re.escape(f.fileid)
+        fileids.update([rf"={fileid}", rf"/{fileid}/"])
     urls.discard("")
 
     found_in_updated = []
