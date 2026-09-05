@@ -146,11 +146,13 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
         else:
             try:
                 ts = int(post.date)
-            except Exception:
-                print("Bad date")
-                continue
-            if datetime.fromtimestamp(ts, UTC) > last_date:
+                recent = datetime.fromtimestamp(ts, UTC) > last_date
+            except (TypeError, ValueError, OverflowError, OSError):
+                print(f"Bad date for post {pid}: {post.date!r}")
                 files_to_exclude.update(fileids)
+            else:
+                if recent:
+                    files_to_exclude.update(fileids)
 
         for fileid, url in pairs:
             if fileid in files:

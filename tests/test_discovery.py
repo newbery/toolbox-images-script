@@ -111,6 +111,24 @@ def test_files_from_posts_skips_recent_or_nonmatching_test_post(ctx):
     assert files["111"].result == models.FileResult.skipped
 
 
+def test_files_from_posts_preserves_references_with_bad_date(ctx):
+    """Files referenced by a post with a malformed date should be kept and skipped."""
+    ctx.config.old_url = "https://abc.cloudfront.net/"
+    ctx.config.old_url_thumb = ""
+    ctx.config.skip_days = 1
+    posts = {
+        "1": models.Post(
+            date="not-a-timestamp",
+            image_urls=["https://abc.cloudfront.net/1/111/a.jpg"],
+        )
+    }
+
+    files = discovery.files_from_posts(ctx, posts)
+
+    assert files["111"].pids == {"1"}
+    assert files["111"].result == models.FileResult.skipped
+
+
 def test_files_from_export_builds_new_url(ctx):
     """The `files_from_export` function should resolve legacy '/file?id=' links
     using attachment metadata to produce a concrete legacy file url for later
