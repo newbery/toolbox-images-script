@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from toolbox import discovery, io, models
 
 
@@ -142,3 +144,19 @@ def test_files_from_export_builds_new_url(ctx):
 
     files = discovery.files_from_export(ctx, posts)
     assert files["123"].new_url == "https://abc.cloudfront.net/123/a.jpg"
+
+
+def test_files_from_export_duplicate_rows_do_not_hide_missing_metadata(ctx):
+    """Duplicate attachment rows should not count as distinct resolved file IDs."""
+    ctx.config.old_url = "https://abc.cloudfront.net/"
+    urls = ["/file?id=123", "/file?id=456"]
+    post = models.Post(date="0", image_urls=urls)
+    posts = {"1": post}
+    attach = ctx.path.export_dir / "attachment.csv"
+    attach.write_text("fileid,filename\n123,a.jpg\n123,a-duplicate.jpg\n")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Attachment metadata not found for file IDs: 456",
+    ):
+        discovery.files_from_export(ctx, posts)

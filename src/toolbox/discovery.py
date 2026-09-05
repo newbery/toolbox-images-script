@@ -210,23 +210,18 @@ def files_from_export(context: Context, posts: PostMap) -> FileMap:
                 )
 
     # Generate new_url from 'attachments.csv' export
-    count = 0
     filecount = len(files)
-    seen = set()
+    seen: set[str] = set()
     for row in read_csv(files_input_path):
         fileid = row["fileid"]
         if fileid in files:
             seen.add(fileid)
             files[fileid].new_url = old_url + f"{fileid}/{row['filename']}"
-            count += 1
-            if count == filecount:
+            if len(seen) == filecount:
                 break
 
-    if count != len(files):
-        # This should not happen. So stop and figure it out.
-        raise Exception
-        # missing = set(files) - seen
-        # files_ = {k: v for k, v in files.items() if k in missing}
-        # breakpoint()
+    if len(seen) != filecount:
+        missing = sorted(set(files) - seen)
+        raise RuntimeError(f"Attachment metadata not found for file IDs: {', '.join(missing)}")
 
     return files
