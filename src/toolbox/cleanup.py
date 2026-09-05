@@ -243,7 +243,7 @@ def grep_urls_in_file(updates_path: Path, urls: list[str]) -> str:
     pattern_path: Path | None = None
     try:
         # Write patterns one-per-line for grep -f
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tf:
+        with tempfile.NamedTemporaryFile("w", delete=False) as tf:
             for u in patterns:
                 tf.write(u)
                 tf.write("\n")

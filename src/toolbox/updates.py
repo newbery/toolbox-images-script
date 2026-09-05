@@ -95,7 +95,7 @@ def build_update_plan(
     temp = tempfile.NamedTemporaryFile
     count = max(0, linecount(posts_path) - 1)
 
-    with temp(mode="w", encoding="utf-8", newline="\n", delete=False) as plan_file:
+    with temp(mode="w", newline="\n", delete=False) as plan_file:
         plan_path = Path(plan_file.name)
 
         with alive_bar(count, title="Plan post updates") as bar:
@@ -162,7 +162,7 @@ def apply_update_plan(
         updates_output.writerow(fieldnames)
 
         with alive_bar(count, title="Update posts") as bar:
-            with plan_path.open("r", encoding="utf-8") as plan_in:
+            with plan_path.open("r") as plan_in:
                 for line in plan_in:
                     item = json.loads(line)
                     pid = item["pid"]
@@ -222,8 +222,8 @@ def update_posts(context: Context, legacy: bool = False) -> None:
 
     # A delete run consumes this file directly, so invalidate any previous
     # handoff before doing work that might return early or raise.
-    deletes_output_path.write_text(json.dumps([]), encoding="utf-8")
-    dry_deletes_output_path.write_text(json.dumps([]), encoding="utf-8")
+    deletes_output_path.write_text(json.dumps([]))
+    dry_deletes_output_path.write_text(json.dumps([]))
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
@@ -318,13 +318,13 @@ def update_posts(context: Context, legacy: bool = False) -> None:
     fileids_to_delete = {file.fileid for file in files_to_delete}
 
     if dry_run or legacy:
-        dry_deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)), encoding="utf-8")
+        dry_deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)))
     else:
         # Publish the destructive handoff only after the final reference scan passes.
         if files_to_delete and not check_old_urls(context, files_to_delete):
             print("! WARNING: At least one old_url or fileid was found in the posts")
             raise RuntimeError("Old Toolbox references remain after updating posts")
-        deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)), encoding="utf-8")
+        deletes_output_path.write_text(json.dumps(sorted(fileids_to_delete)))
 
     if posts_errors:
         print("! Errors attempting to update the following posts:")

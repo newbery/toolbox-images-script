@@ -57,7 +57,6 @@ def test_grep_urls_in_file_finds_matching_pids(tmp_path):
         "1,success,hello https://a.example.com/x.jpg\n"
         "2,success,bye\n"
         "3,success,see https://b.example.com/y.jpg\n",
-        encoding="utf-8",
     )
     out = cleanup.grep_urls_in_file(updates, ["https://b.example.com/y.jpg", ""])
     assert out.split() == ["3"]
@@ -160,7 +159,7 @@ def test_delete_files_batches_and_calls_client(ctx, monkeypatch):
     the admin client's `delete_files` in batches of 100 fileids.
     """
     ctx.path.fileids_to_delete.write_text(
-        json.dumps([str(i) for i in range(1, 205)]), encoding="utf-8"
+        json.dumps([str(i) for i in range(1, 205)])
     )
     monkeypatch.setattr(cleanup.time, "sleep", lambda *_a, **_k: None)
 

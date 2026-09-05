@@ -48,8 +48,8 @@ def test_select_files_to_delete_is_fileid_safe_and_toolbox_only():
 
 def test_update_posts_clears_stale_delete_handoffs_before_preflight(ctx, monkeypatch, write_csv):
     """An early preflight return should not leave candidates from an older run."""
-    ctx.path.fileids_to_delete.write_text('["stale"]', encoding="utf-8")
-    ctx.path.fileids_to_delete_dry_run.write_text('["stale-dry"]', encoding="utf-8")
+    ctx.path.fileids_to_delete.write_text('["stale"]')
+    ctx.path.fileids_to_delete_dry_run.write_text('["stale-dry"]')
     write_csv(
         ctx.path.files,
         ["fileid", "pids", "url", "url_thumb", "url_file", "new_url", "result"],
@@ -61,8 +61,8 @@ def test_update_posts_clears_stale_delete_handoffs_before_preflight(ctx, monkeyp
     to_delete = ctx.path.fileids_to_delete
     to_delete_dry_run = ctx.path.fileids_to_delete_dry_run
 
-    assert json.loads(to_delete.read_text(encoding="utf-8")) == []
-    assert json.loads(to_delete_dry_run.read_text(encoding="utf-8")) == []
+    assert json.loads(to_delete.read_text()) == []
+    assert json.loads(to_delete_dry_run.read_text()) == []
 
 
 def test_update_posts_keeps_delete_handoff_empty_when_final_check_fails(
@@ -113,7 +113,7 @@ def test_update_posts_keeps_delete_handoff_empty_when_final_check_fails(
         updates.update_posts(ctx)
 
     to_delete = ctx.path.fileids_to_delete
-    assert json.loads(to_delete.read_text(encoding="utf-8")) == []
+    assert json.loads(to_delete.read_text()) == []
 
 
 def test_update_posts_updates_content_and_writes_outputs(ctx, monkeypatch, write_csv):
@@ -202,9 +202,9 @@ def test_update_posts_updates_content_and_writes_outputs(ctx, monkeypatch, write
     # In dry-run mode, fileids_to_delete.json is intentionally left empty,
     # while the would-delete set is written to fileids_to_delete.dry_run.json.
     to_delete = ctx.path.fileids_to_delete
-    fileids = json.loads(to_delete.read_text(encoding="utf-8"))
+    fileids = json.loads(to_delete.read_text())
     assert fileids == []
 
     to_delete_dry_run = ctx.path.fileids_to_delete_dry_run
-    dry_fileids = json.loads(to_delete_dry_run.read_text(encoding="utf-8"))
+    dry_fileids = json.loads(to_delete_dry_run.read_text())
     assert dry_fileids == ["123"]

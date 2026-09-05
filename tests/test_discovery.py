@@ -16,7 +16,6 @@ def test_posts_from_export_collects_urls(ctx):
         "pid,date,message\n"
         '1,100,<p><img src="https://old.example.com/123/a.jpg"/></p>\n'
         "2,101,<p>no image</p>\n",
-        encoding="utf-8",
     )
 
     posts = discovery.posts_from_export(ctx)
@@ -140,7 +139,7 @@ def test_files_from_export_builds_new_url(ctx):
     ctx.config.old_url = "https://abc.cloudfront.net/"
     posts = {"1": models.Post(date="0", image_urls=["/file?id=123"])}
     attach = ctx.path.export_dir / "attachment.csv"
-    attach.write_text("fileid,filename\n123,a.jpg\n", encoding="utf-8")
+    attach.write_text("fileid,filename\n123,a.jpg\n")
 
     files = discovery.files_from_export(ctx, posts)
     assert files["123"].new_url == "https://abc.cloudfront.net/123/a.jpg"

@@ -41,7 +41,7 @@ def test_read_csv_yields_rows(tmp_path):
     with string values from each row.
     """
     p = tmp_path / "a.csv"
-    p.write_text("pid,date,message\n1,2,hi\n", encoding="utf-8")
+    p.write_text("pid,date,message\n1,2,hi\n")
     rows = list(io.read_csv(p))
     assert rows == [{"pid": "1", "date": "2", "message": "hi"}]
 
@@ -58,7 +58,7 @@ def test_linecount_counts_lines(tmp_path):
     lines in an existing text file.
     """
     p = tmp_path / "x.txt"
-    p.write_text("a\nb\nc\n", encoding="utf-8")
+    p.write_text("a\nb\nc\n")
     assert io.linecount(p) == 3
 
 
@@ -86,7 +86,7 @@ def test_rotate_output_archive_rotates_and_prunes(tmp_path, monkeypatch, config_
     )
 
     # make output non-empty so it will archive
-    (output_dir / "something.txt").write_text("x", encoding="utf-8")
+    (output_dir / "something.txt").write_text("x")
     # create existing archives to trigger pruning
     archive_dir = output_dir.with_name(output_dir.name + ".archive")
     archive_dir.mkdir()
@@ -123,6 +123,6 @@ def test_log_writes_line(ctx, monkeypatch):
 
     monkeypatch.setattr(io, "datetime", FixedDateTime)
     io.log(ctx, text="hello")
-    txt = ctx.path.log.read_text(encoding="utf-8")
+    txt = ctx.path.log.read_text()
     assert "hello" in txt
     assert "2020-01-02" in txt

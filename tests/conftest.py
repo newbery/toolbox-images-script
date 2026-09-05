@@ -77,7 +77,7 @@ def write_csv():
     import csv
 
     def _write_csv(path: Path, header, rows):
-        with path.open("w", newline="", encoding="utf-8") as f:
+        with path.open("w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(header)
             for row in rows:
