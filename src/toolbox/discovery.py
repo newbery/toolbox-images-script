@@ -4,12 +4,35 @@ Discover posts and Website Toolbox-hosted files.
 
 import csv
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import unquote
 
 from .context import Context, alive_bar
 from .io import linecount, read_csv
 from .models import FileMap, FileResult, ForumFile, Post, PostMap
 from .urls import fileid_from_url, find_legacy_urls, find_urls_func
+
+
+def _relative_download_path(url: str, prefix: str) -> str:
+    """Return a safe relative filesystem path for a URL under `prefix`."""
+    if not url.startswith(prefix):
+        raise ValueError(f"URL does not start with configured OLD_URL: {url!r}")
+
+    path = unquote(url[len(prefix) :])
+    posix_path = PurePosixPath(path)
+    windows_path = PureWindowsPath(path)
+    unsafe = (
+        not path
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
+    )
+    if unsafe:
+        raise ValueError(f"Unsafe download path derived from URL: {url!r}")
+
+    return posix_path.as_posix()
 
 
 def posts_from_export(context: Context, legacy: bool = False) -> PostMap:
@@ -170,7 +193,7 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
                     url=url,
                     url_thumb=thumb,
                     url_file=f"/file?id={fileid}" if toolbox else "",
-                    path=unquote(url[len(prefix) :]),
+                    path=_relative_download_path(url, prefix),
                     pids={pid},
                 )
 

@@ -104,9 +104,8 @@ def test_files_from_posts_skips_recent_or_nonmatching_test_post(ctx):
     ctx.config.old_url_thumb = ""
     ctx.config.skip_days = 1  # skip anything newer than 1 day ago
     now_ts = int(datetime.now(UTC).timestamp())
-    posts = {
-        "1": models.Post(date=str(now_ts), image_urls=["https://abc.cloudfront.net/1/111/a.jpg"])
-    }
+    url = "https://abc.cloudfront.net/1/111/a.jpg"
+    posts = {"1": models.Post(date=str(now_ts), image_urls=[url])}
 
     files = discovery.files_from_posts(ctx, posts)
     assert files["111"].result == models.FileResult.skipped
@@ -117,17 +116,23 @@ def test_files_from_posts_preserves_references_with_bad_date(ctx):
     ctx.config.old_url = "https://abc.cloudfront.net/"
     ctx.config.old_url_thumb = ""
     ctx.config.skip_days = 1
-    posts = {
-        "1": models.Post(
-            date="not-a-timestamp",
-            image_urls=["https://abc.cloudfront.net/1/111/a.jpg"],
-        )
-    }
+    url = "https://abc.cloudfront.net/1/111/a.jpg"
+    posts = {"1": models.Post(date="not-a-timestamp", image_urls=[url])}
 
     files = discovery.files_from_posts(ctx, posts)
 
     assert files["111"].pids == {"1"}
     assert files["111"].result == models.FileResult.skipped
+
+
+def test_files_from_posts_rejects_unsafe_download_path(ctx):
+    """Decoded image paths should not be allowed to escape the download directory."""
+    ctx.config.old_url = "https://abc.cloudfront.net/"
+    url = "https://abc.cloudfront.net/%2e%2e/123/escape.jpg"
+    posts = {"1": models.Post(date="0", image_urls=[url])}
+
+    with pytest.raises(ValueError, match="Unsafe download path derived from URL"):
+        discovery.files_from_posts(ctx, posts)
 
 
 def test_files_from_export_builds_new_url(ctx):

@@ -1,3 +1,5 @@
+import pytest
+
 from toolbox import download, io, models
 
 
@@ -140,3 +142,24 @@ def test_download_files_does_not_count_file_when_thumbnail_fails(ctx, capsys):
 
     assert out["1"].result == models.FileResult.error
     assert "downloaded 0" in capsys.readouterr().out
+
+
+def test_download_files_rejects_path_outside_download_directory(ctx):
+    """The download boundary should reject file paths that escape its managed directories."""
+
+    class FakeDownloader:
+        def download(self, url, path_new):
+            raise AssertionError("unsafe path should be rejected before download")
+
+    ctx.downloader = FakeDownloader()
+    files = {
+        "1": models.ForumFile(
+            fileid="1",
+            url="https://x/1.jpg",
+            path="../escape.jpg",
+            pids={"p1"},
+        )
+    }
+
+    with pytest.raises(ValueError, match="Unsafe download path outside"):
+        download.download_files(ctx, files)

@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlparse
 
 import requests
 from alive_progress import alive_bar as _alive_bar
@@ -50,19 +51,25 @@ class Config:
             raw = values.get(name, default)
             return default if raw is None else raw
 
+        def required(name: str) -> str:
+            raw = value(name)
+            if not raw.strip():
+                raise ValueError(f"Missing required config value: {name.upper()}")
+            return raw
+
         old_url_thumb = value("old_url_thumb") or None
         test_post_id = value("test_post_id") or None
 
         return cls(
             api_url=value("api_url"),
             admin_url=value("admin_url"),
-            export_dir=Path(value("export_dir")),
-            download_dir=Path(value("download_dir")),
-            output_dir=Path(value("output_dir")),
+            export_dir=Path(required("export_dir")),
+            download_dir=Path(required("download_dir")),
+            output_dir=Path(required("output_dir")),
             old_url=value("old_url"),
             old_url_thumb=old_url_thumb,
             new_url=value("new_url"),
-            skip_days=int(value("skip_days", "0")),
+            skip_days=int(required("skip_days")),
             test_post_id=test_post_id,
             dry_run=parse_bool(values.get("dry_run"), default=True),
             api_key=value("api_key"),
@@ -117,6 +124,41 @@ def parse_bool(val: str | bool | None, default: bool = True) -> bool:
     raise ValueError(f"Invalid boolean value: {val!r}")
 
 
+def validate_config(config: Config) -> None:
+    """Validate migration configuration."""
+    required = (
+        "API_URL",
+        "ADMIN_URL",
+        "OLD_URL",
+        "NEW_URL",
+        "API_KEY",
+        "API_USERNAME",
+        "ADMIN_COOKIE",
+    )
+    for name in required:
+        value = getattr(config, name.lower())
+        if not value.strip():
+            raise ValueError(f"Missing required config value: {name}")
+
+    urls = [name for name in required if name.endswith("_URL")]
+    if config.old_url_thumb:
+        urls.append("OLD_URL_THUMB")
+
+    for name in urls:
+        value = getattr(config, name.lower())
+        parsed = urlparse(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"{name} must be an absolute http(s) URL: {value!r}")
+
+    for name in ("OLD_URL", "OLD_URL_THUMB", "NEW_URL"):
+        value = getattr(config, name.lower())
+        if value and "?" not in value and not value.endswith("/"):
+            raise ValueError(f"{name} must end with '/': {value!r}")
+
+    if config.skip_days < 0:
+        raise ValueError("SKIP_DAYS must be greater than or equal to 0")
+
+
 def config() -> Config:
     """Collect typed config from dotenv files and TOOLBOX_* environment variables.
 
@@ -160,6 +202,7 @@ def paths(config: Config) -> Paths:
 def init_context(args: CliArgs) -> Context:
     """Initialize the typed runtime context."""
     cfg = config()
+    validate_config(cfg)
     path = paths(cfg)
 
     # Precedence: explicit CLI flags > config/env (default: dry-run).

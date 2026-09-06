@@ -5,10 +5,20 @@ Download discovered files and write migration summaries.
 import csv
 from collections import defaultdict
 from itertools import chain
+from pathlib import Path
 
 from .context import Context, alive_bar
 from .io import friendly_size, read_csv
 from .models import FileMap, FileResult
+
+
+def _safe_download_path(root: Path, path: str) -> Path:
+    """Join a relative download path to `root` without allowing it to escape."""
+    root = root.resolve()
+    target = (root / path).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"Unsafe download path outside {root}: {path!r}")
+    return target
 
 
 def download_files(context: Context, files: FileMap) -> FileMap:
@@ -18,8 +28,8 @@ def download_files(context: Context, files: FileMap) -> FileMap:
 
     def download_file(url: str, path: str) -> int:
         """Download a single file"""
-        path_old = download_dir / "_old_" / path
-        path_new = download_dir / "_new_" / path
+        path_old = _safe_download_path(download_dir / "_old_", path)
+        path_new = _safe_download_path(download_dir / "_new_", path)
 
         if path_old.exists():
             size = path_old.stat().st_size

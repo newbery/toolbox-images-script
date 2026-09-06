@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from toolbox import context, models
 
 
@@ -55,6 +57,55 @@ def test_paths_builds_expected_paths(tmp_path, config_for):
     assert paths.export_dir.name == "export"
     assert paths.posts.name == "posts.csv"
     assert paths.fileids_to_delete.name == "fileids_to_delete.json"
+
+
+def test_config_from_mapping_rejects_missing_required_values():
+    """Configuration loading should fail rather than silently default required paths."""
+    with pytest.raises(ValueError, match="Missing required config value: EXPORT_DIR"):
+        context.Config.from_mapping({})
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"old_url": "https://old.example.com"}, "OLD_URL must end with '/':"),
+        ({"new_url": "not-a-url"}, r"NEW_URL must be an absolute http\(s\) URL"),
+        ({"skip_days": -1}, "SKIP_DAYS must be greater than or equal to 0"),
+    ],
+)
+def test_validate_config_rejects_invalid_values(tmp_path, config_for, changes, message):
+    """Configuration validation should reject malformed URLs and negative skip days."""
+    cfg = config_for(tmp_path, **changes)
+
+    with pytest.raises(ValueError, match=message):
+        context.validate_config(cfg)
+
+
+def test_validate_config_allows_query_url_prefix(tmp_path, config_for):
+    """Image URL prefixes with query parameters should not require a trailing slash."""
+    cfg = config_for(tmp_path, new_url="https://new.example.com/?url=")
+
+    context.validate_config(cfg)
+
+
+@pytest.mark.parametrize(
+    ("changes", "name"),
+    [
+        ({"api_url": ""}, "API_URL"),
+        ({"admin_url": ""}, "ADMIN_URL"),
+        ({"old_url": ""}, "OLD_URL"),
+        ({"new_url": ""}, "NEW_URL"),
+        ({"api_key": ""}, "API_KEY"),
+        ({"api_username": ""}, "API_USERNAME"),
+        ({"admin_cookie": ""}, "ADMIN_COOKIE"),
+    ],
+)
+def test_validate_config_requires_complete_migration_config(tmp_path, config_for, changes, name):
+    """Configuration validation should require the full migration configuration."""
+    cfg = config_for(tmp_path, **changes)
+
+    with pytest.raises(ValueError, match=f"Missing required config value: {name}"):
+        context.validate_config(cfg)
 
 
 def test_init_context_populates_typed_context_and_config_dry_run_false(
