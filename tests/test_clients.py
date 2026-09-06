@@ -4,6 +4,9 @@ from toolbox import clients
 
 
 def test_downloader_replaces_target_only_after_download_completes(ctx, tmp_path):
+    """The `download` method should replace the target only after the entire
+    response body has been written successfully.
+    """
     target = tmp_path / "nested" / "image.jpg"
     part = target.with_name(f"{target.name}.part")
 
@@ -43,6 +46,9 @@ def test_downloader_replaces_target_only_after_download_completes(ctx, tmp_path)
 
 
 def test_downloader_removes_partial_file_and_preserves_target_on_error(ctx, tmp_path):
+    """The `download` method should remove its partial file and preserve an
+    existing target when streaming fails.
+    """
     target = tmp_path / "image.jpg"
     target.write_bytes(b"existing")
     part = target.with_name(f"{target.name}.part")
@@ -75,3 +81,36 @@ def test_downloader_removes_partial_file_and_preserves_target_on_error(ctx, tmp_
 
     assert target.read_bytes() == b"existing"
     assert not part.exists()
+
+
+def test_admin_delete_files_refuses_missing_files_form(ctx):
+    """The `delete_files` method should refuse to post deletions when the
+    expected `frmFiles` form is missing from the admin page.
+    """
+    class FakeResponse:
+        text = "<html><body>No files form</body></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+    class FakeSession:
+        def get(self, url, headers, timeout):
+            assert url == "https://admin.example.com/mb/uploading/files"
+            assert timeout == 30
+            return FakeResponse()
+
+        def post(self, *args, **kwargs):
+            pytest.fail("delete request must not be sent without frmFiles")
+
+    ctx.dry_run = False
+    ctx.session = FakeSession()
+
+    with pytest.raises(RuntimeError, match="Expected form #frmFiles not found"):
+        clients.AdminClient(ctx).delete_files(["123"])
+

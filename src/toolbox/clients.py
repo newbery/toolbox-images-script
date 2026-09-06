@@ -79,10 +79,12 @@ class AdminClient(BaseClient):
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
             form = soup.find("form", {"id": "frmFiles"})
+            if form is None:
+                raise RuntimeError(f"Expected form #frmFiles not found at {url}")
+
             hidden = {}
-            if form:
-                for i in form.select('input[type="hidden"][name]'):
-                    hidden[i["name"]] = i.get("value", "")
+            for i in form.select('input[type="hidden"][name]'):
+                hidden[i["name"]] = i.get("value", "")
             return hidden
 
     def delete_files(self, fileids: list[str]) -> bool:
