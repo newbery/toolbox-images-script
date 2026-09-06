@@ -47,7 +47,6 @@ def download_files(context: Context, files: FileMap) -> FileMap:
             size_ = download_file(file.url, file.path)
             if size_:
                 size += size_
-                downloaded += 1
                 file.result = FileResult.downloaded
             else:
                 errors.add(fileid)
@@ -61,6 +60,9 @@ def download_files(context: Context, files: FileMap) -> FileMap:
                 else:
                     errors.add(fileid)
                     file.result = FileResult.error
+
+            if file.result is FileResult.downloaded:
+                downloaded += 1
 
             bar(1)
 

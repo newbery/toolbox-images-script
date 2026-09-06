@@ -107,3 +107,36 @@ def test_summarize_writes_posts_and_files(ctx, write_csv):
 
     files_out = list(io.read_csv(ctx.path.files))
     assert any(r["fileid"] == "123" for r in files_out)
+
+
+def test_download_files_does_not_count_file_when_thumbnail_fails(ctx, capsys):
+    """The `download_files` function should count a file as downloaded only
+    after both its full image and thumbnail have downloaded successfully.
+    """
+
+    class FakeDownloader:
+        def __init__(self):
+            self.calls = []
+
+        def download(self, url, path_new):
+            self.calls.append((url, str(path_new)))
+            if "/thumb/" in str(path_new):
+                return 0
+            return 3
+
+    ctx.downloader = FakeDownloader()
+
+    files = {
+        "1": models.ForumFile(
+            fileid="1",
+            url="https://x/1.jpg",
+            url_thumb="https://x/t1.jpg",
+            path="1.jpg",
+            pids={"p1"},
+        )
+    }
+
+    out = download.download_files(ctx, files)
+
+    assert out["1"].result == models.FileResult.error
+    assert "downloaded 0" in capsys.readouterr().out
