@@ -164,7 +164,7 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
                 thumb = ""
                 if prefix_thumb and url.startswith(prefix_thumb):
                     thumb = url
-                    url = url.replace(prefix_thumb, prefix)
+                    url = prefix + url.removeprefix(prefix_thumb)
                 files[fileid] = ForumFile(
                     fileid=fileid,
                     url=url,
