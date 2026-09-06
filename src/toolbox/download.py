@@ -40,6 +40,7 @@ def download_files(context: Context, files: FileMap) -> FileMap:
         for fileid, file in files.items():
             if file.result == FileResult.skipped:
                 skipped += 1
+                bar(1)
                 continue
 
             # Full image/file
