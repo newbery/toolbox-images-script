@@ -87,6 +87,7 @@ def test_admin_delete_files_refuses_missing_files_form(ctx):
     """The `delete_files` method should refuse to post deletions when the
     expected `frmFiles` form is missing from the admin page.
     """
+
     class FakeResponse:
         text = "<html><body>No files form</body></html>"
 
@@ -113,4 +114,3 @@ def test_admin_delete_files_refuses_missing_files_form(ctx):
 
     with pytest.raises(RuntimeError, match="Expected form #frmFiles not found"):
         clients.AdminClient(ctx).delete_files(["123"])
-

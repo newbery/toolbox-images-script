@@ -125,7 +125,6 @@ def check_new_urls(context: Context, files: FileMap) -> bool:
 
     if images_errors:
         if stop_fast:
-            # breakpoint()
             raise Exception
         print("Check new urls: !!! Errors attempting to access the following images:")
         for url in images_errors:
@@ -208,8 +207,6 @@ def check_urls_in_old_folder(context: Context) -> None:
                 shutil.copy2(src_path, dst)
                 if len(first_few_missing) < 20:
                     first_few_missing.append(new_url)
-
-                breakpoint()
 
             time.sleep(sleep)
             bar()
