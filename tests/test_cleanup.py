@@ -158,9 +158,7 @@ def test_delete_files_batches_and_calls_client(ctx, monkeypatch):
     """The `delete_files` function should load `fileids_to_delete.json` and invoke
     the admin client's `delete_files` in batches of 100 fileids.
     """
-    ctx.path.fileids_to_delete.write_text(
-        json.dumps([str(i) for i in range(1, 205)])
-    )
+    ctx.path.fileids_to_delete.write_text(json.dumps([str(i) for i in range(1, 205)]))
     monkeypatch.setattr(cleanup.time, "sleep", lambda *_a, **_k: None)
 
     calls = []

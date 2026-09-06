@@ -28,19 +28,27 @@ class BaseClient:
 
 class Downloader(BaseClient):
     def download(self, url: str, path: Path) -> int:
+        part_path = path.with_name(f"{path.name}.part")
+        part_path.unlink(missing_ok=True)
+
         get = self.context.session.get
         with get(url, stream=True, timeout=60) as resp:
-            if resp.status_code == 200:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("wb") as f:
+            if resp.status_code != 200:
+                return 0
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with part_path.open("wb") as f:
                     for chunk in resp.iter_content(1024):
                         if chunk:
                             f.write(chunk)
+
                 cl = resp.headers.get("Content-Length")
-                size = int(cl) if cl is not None else path.stat().st_size
-            else:
-                size = 0
-        return size
+                size = int(cl) if cl is not None else part_path.stat().st_size
+                part_path.replace(path)
+                return size
+            finally:
+                part_path.unlink(missing_ok=True)
 
 
 class AdminClient(BaseClient):
