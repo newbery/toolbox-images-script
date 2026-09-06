@@ -9,7 +9,9 @@ def test_downloader_replaces_target_only_after_download_completes(ctx, tmp_path)
 
     class FakeResponse:
         status_code = 200
-        headers = {"Content-Length": "6"}
+
+        def __init__(self):
+            self.headers = {"Content-Length": "6"}
 
         def __enter__(self):
             return self
@@ -47,7 +49,9 @@ def test_downloader_removes_partial_file_and_preserves_target_on_error(ctx, tmp_
 
     class FakeResponse:
         status_code = 200
-        headers = {}
+
+        def __init__(self):
+            self.headers = {}
 
         def __enter__(self):
             return self
