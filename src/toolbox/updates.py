@@ -62,12 +62,11 @@ def rewrite_post_content(
         touched_urls.add(url)
 
         # Full image links often accompany thumb images
-        if "/thumb/" in url:
-            full_url = url.replace("thumb/", "")
-            if full_url in files:
-                new_full_url = new_url_func(full_url)
-                new_message = new_message.replace(full_url, new_full_url)
-                touched_urls.add(full_url)
+        if file.url_thumb and url == file.url_thumb:
+            full_url = file.url
+            new_full_url = new_url_func(full_url)
+            new_message = new_message.replace(full_url, new_full_url)
+            touched_urls.add(full_url)
 
         # Toolbox sometimes uses a special "/file?id=" link
         if file.url_file:
