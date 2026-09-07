@@ -166,7 +166,7 @@ def remove_bad_url(text: str, bad_url: str) -> str:
             badstuff.insert_after(
                 " ", notice, Comment(f" Bad URL: {bad_url.replace('https://', '')} ")
             )
-            if link:
+            if link and link.get("href") == bad_url:
                 link.attrs.pop("href", None)
             img.attrs.pop("src", None)
     return html.decode(formatter="html")

@@ -74,6 +74,21 @@ def test_remove_bad_url_de_links_image_and_adds_notice():
     assert "Bad URL:" in out
 
 
+def test_remove_bad_url_preserves_unrelated_link():
+    """The `remove_bad_url` function should preserve an enclosing link when its
+    destination is unrelated to the missing image.
+    """
+    bad = "https://old.example.com/999/missing.jpg"
+    destination = "https://example.com/page"
+    html = f'<p><a href="{destination}"><img src="{bad}"/></a></p>'
+
+    out = urls.remove_bad_url(html, bad)
+
+    assert f'href="{destination}"' in out
+    assert 'src="' not in out
+    assert "(missing image)" in out
+
+
 def test_get_new_url_func_basic_and_thumb():
     """The `get_new_url_func` function should rewrite old urls to the new prefix,
     preserving the '/thumb/' variant when present.
