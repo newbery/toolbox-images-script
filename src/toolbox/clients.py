@@ -146,8 +146,8 @@ class APIClient(BaseClient):
             # 125719 posts / (100 posts/page) --> 1257 seconds or 21 minutes
             time.sleep(1)
 
-            # Each request counts as a page view
-            # so just do 3 requests (300 posts) during test runs
+            # Each request counts as a page view, so limit dry runs to
+            # 3 requests (300 posts).
             if self.context.dry_run and params["page"] > 2:
                 return
 

@@ -75,8 +75,8 @@ def delete_files(context: Context) -> None:
 
 
 def check_new_urls(context: Context, files: FileMap) -> bool:
-    """Check new urls for file/image urls given by posts in `posts.csv` output
-    from last `output_results` run. If any are inaccessible then return False.
+    """Check new urls for file/image urls referenced by the current `posts.csv`.
+    If any are inaccessible then return False.
 
     This is checked before 'update_posts'.
     """

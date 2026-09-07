@@ -226,7 +226,7 @@ def update_posts(context: Context, legacy: bool = False) -> None:
 
     new_url_func = get_new_url_func(old_prefix, thumb_prefix, new_prefix)
 
-    # Load file data from output_results, keyed by any urls found in posts
+    # Load file data from files.csv, keyed by any URLs found in posts.
     files: FileMap = {}
     for row in read_csv(files_path):
         file = ForumFile.from_csv_row(row)
