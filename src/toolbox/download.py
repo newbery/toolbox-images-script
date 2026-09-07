@@ -77,7 +77,10 @@ def download_files(context: Context, files: FileMap) -> FileMap:
             bar(1)
 
             if context.dry_run and downloaded > 11:
-                skipped = len(files) - len(errors) - downloaded
+                for remaining in files.values():
+                    if remaining.result is FileResult.default:
+                        remaining.result = FileResult.skipped
+                skipped = sum(file.result is FileResult.skipped for file in files.values())
                 break
 
     if errors:
