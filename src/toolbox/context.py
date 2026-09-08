@@ -18,7 +18,7 @@ from requests_file import FileAdapter
 from .clients import AdminClient, APIClient, Downloader
 from .models import CliArgs
 
-USER_AGENT = "toolbox-images-script/1.0"
+USER_AGENT = "toolbox-images-migration/0.2.0"
 
 config_handler.set_global(bar="smooth", spinner="classic", receipt=False)
 alive_bar = _alive_bar
@@ -221,7 +221,8 @@ def init_context(args: CliArgs) -> Context:
 
 def init_clients(context: Context, session: requests.Session | None = None) -> Context:
     """Initialize service clients and add them to the context."""
-    session = session or requests.Session()
+    if session is None:
+        session = requests.Session()
     session.mount("file://", FileAdapter())
     session.headers.update({"User-Agent": USER_AGENT})
 

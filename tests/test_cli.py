@@ -5,18 +5,12 @@ import pytest
 from toolbox import cli, models
 
 
-def test_parse_args_parses_mode_and_verbose(monkeypatch):
-    """The `parse_args` function should accept a valid mode, set args.mode,
-    and parse -v/--verbose into args.verbose.
-    """
+def test_parse_args_parses_mode(monkeypatch):
+    """The `parse_args` function should accept a valid mode and set args.mode."""
     monkeypatch.setattr(cli, "modes", lambda: {"download_files": lambda _ctx: None})
 
     args = cli.parse_args(["download_files"])
     assert args.mode == "download_files"
-    assert args.verbose is False
-    args2 = cli.parse_args(["-v", "download_files"])
-    assert args2.mode == "download_files"
-    assert args2.verbose is True
 
 
 def test_parse_args_rejects_unknown_mode(monkeypatch):

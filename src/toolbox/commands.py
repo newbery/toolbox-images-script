@@ -71,18 +71,15 @@ def mode_download_links(context: Context) -> None:
         print("Aborting")
         return
 
-    # Override configs
-    context.config.old_url_thumb = None
-    context.config.skip_days = 0
-
     # Keep results from the last 10 runs for debugging purposes
     # rotate_output_archive(args)
     log(context)
 
-    # Process the data sources
-    posts = posts_from_export(context)
-    posts = posts_from_api(context, posts)
-    files = files_from_posts(context, posts)
+    # Process the data sources. Link-only migration does not distinguish thumbnail
+    # URLs and intentionally ignores the configured recent-post cutoff.
+    posts = posts_from_export(context, include_thumbnails=False)
+    posts = posts_from_api(context, posts, include_thumbnails=False)
+    files = files_from_posts(context, posts, include_thumbnails=False, skip_days=0)
 
     # Generate summary
     summarize(context, files)
@@ -154,10 +151,6 @@ def mode_update_legacy_links(context: Context) -> None:
     # Keep results from the last 10 runs for debugging purposes
     # rotate_output_archive(args)
     log(context)
-
-    # Override configs
-    context.config.old_url_thumb = None
-    context.config.skip_days = 0
 
     # Process the data sources
     posts = posts_from_export(context, legacy=True)

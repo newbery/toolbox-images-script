@@ -35,13 +35,15 @@ def _relative_download_path(url: str, prefix: str) -> str:
     return posix_path.as_posix()
 
 
-def posts_from_export(context: Context, legacy: bool = False) -> PostMap:
+def posts_from_export(
+    context: Context, legacy: bool = False, *, include_thumbnails: bool = True
+) -> PostMap:
     """Process the posts listed in the `posts.csv` file from the Toolbox content
     export, collecting a list of image urls in the message text for any images
     hosted by the Toolbox server.
     """
     old_url: str = context.config.old_url
-    old_url_thumb = context.config.old_url_thumb
+    old_url_thumb = context.config.old_url_thumb if include_thumbnails else None
     posts_input_path = context.path.export_dir / "posts.csv"
     posts_output_path = context.path.posts_from_export
 
@@ -73,7 +75,7 @@ def posts_from_export(context: Context, legacy: bool = False) -> PostMap:
     return posts
 
 
-def posts_from_api(context: Context, posts: PostMap) -> PostMap:
+def posts_from_api(context: Context, posts: PostMap, *, include_thumbnails: bool = True) -> PostMap:
     """Process the posts collected via the List Posts API, collecting a list of
     image urls in the message text for any images hosted by the Toolbox server.
 
@@ -82,7 +84,7 @@ def posts_from_api(context: Context, posts: PostMap) -> PostMap:
     """
     client = context.api_client
     old_url = context.config.old_url
-    old_url_thumb = context.config.old_url_thumb
+    old_url_thumb = context.config.old_url_thumb if include_thumbnails else None
     posts_output_path = context.path.posts_from_api
 
     prefix = (old_url, old_url_thumb) if old_url_thumb else old_url
@@ -98,10 +100,8 @@ def posts_from_api(context: Context, posts: PostMap) -> PostMap:
             posts_output.writerow(fieldnames)
 
             stop = False
-            page_count = 0
             api_requests = client.list_posts()
             for page in api_requests:
-                page_count += 1
                 for row in page["data"]:
                     pid = str(row["postId"])
                     if pid in posts:
@@ -120,14 +120,20 @@ def posts_from_api(context: Context, posts: PostMap) -> PostMap:
                     posts_output.writerow([pid, date, image_urls, message])
                     bar()
 
-                if stop or (context.dry_run and page_count > 3):
+                if stop:
                     break
 
     print(f"From api: Processed {count} posts; Found {found} with image links")
     return posts
 
 
-def files_from_posts(context: Context, posts: PostMap) -> FileMap:
+def files_from_posts(
+    context: Context,
+    posts: PostMap,
+    *,
+    include_thumbnails: bool = True,
+    skip_days: int | None = None,
+) -> FileMap:
     """Collect the file info for the urls found in the posts and tag the
     ones that should be excluded.
 
@@ -137,9 +143,10 @@ def files_from_posts(context: Context, posts: PostMap) -> FileMap:
     probably better postponed.
     """
     test_post_id = context.config.test_post_id
-    last_date = datetime.now(UTC) - timedelta(days=context.config.skip_days)
+    skip_days = context.config.skip_days if skip_days is None else skip_days
+    last_date = datetime.now(UTC) - timedelta(days=skip_days)
     prefix = context.config.old_url
-    prefix_thumb = context.config.old_url_thumb
+    prefix_thumb = context.config.old_url_thumb if include_thumbnails else None
 
     # This is not 100% reliable. It will be wrong if a non-Toolbox file host
     # provider is also using cloudfront.net. But it's good enough for us.
@@ -232,7 +239,7 @@ def files_from_export(context: Context, posts: PostMap) -> FileMap:
                     pids={pid},
                 )
 
-    # Generate new_url from 'attachments.csv' export
+    # Generate new_url from attachment.csv export
     filecount = len(files)
     seen: set[str] = set()
     for row in read_csv(files_input_path):

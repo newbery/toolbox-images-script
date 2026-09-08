@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from toolbox import context, io, models
 
 
@@ -10,12 +12,10 @@ def test_batched_basic():
     assert list(io.batched([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
 
 
-def test_batched_n_lt_1():
-    """The `batched` function should treat non-positive n as a request for
-    a single empty batch.
-    This matches the current implementation contract. Do I care?
-    """
-    assert list(io.batched([1, 2], 0)) == [[]]
+def test_batched_rejects_non_positive_batch_size():
+    """The `batched` function should reject non-positive batch sizes."""
+    with pytest.raises(ValueError, match="n must be at least one"):
+        list(io.batched([1, 2], 0))
 
 
 def test_friendly_size_units():
@@ -109,6 +109,16 @@ def test_rotate_output_archive_rotates_and_prunes(tmp_path, monkeypatch, config_
     # archives should be at most 2 + the new one created
     dirs = [p for p in archive_dir.iterdir() if p.is_dir()]
     assert len(dirs) <= 3  # old pruned + new archive (timestamp) + maybe some remain
+
+
+def test_linecount_reflects_file_changes(tmp_path):
+    """The `linecount` function should reflect changes made after an earlier count."""
+    p = tmp_path / "x.txt"
+    p.write_text("a\n")
+    assert io.linecount(p) == 1
+
+    p.write_text("a\nb\n")
+    assert io.linecount(p) == 2
 
 
 def test_log_writes_line(ctx, monkeypatch):

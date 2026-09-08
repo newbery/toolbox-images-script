@@ -49,7 +49,8 @@ def modes() -> dict[str, Callable[[Context], None]]:
 
 def main(argv: list[str] | None = None) -> None:
     """Main command line entrypoint"""
-    argv = argv or sys.argv[1:]
+    if argv is None:
+        argv = sys.argv[1:]
     args = parse_args(argv)
     context = init_context(args)
     with requests.Session() as session:
@@ -63,8 +64,6 @@ def parse_args(argv: list[str]) -> CliArgs:
         description=DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("-v", "--verbose", action="store_true")
-
     # Safety controls
     #
     # Default behavior is "dry-run" unless explicitly overridden, either by:
@@ -95,7 +94,6 @@ def parse_args(argv: list[str]) -> CliArgs:
     parsed = parser.parse_args(argv)
     return CliArgs(
         mode=parsed.mode,
-        verbose=parsed.verbose,
         apply=parsed.apply,
         dry_run=parsed.dry_run,
         yes=parsed.yes,

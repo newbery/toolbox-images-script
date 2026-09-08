@@ -14,7 +14,6 @@ class CliArgs:
     """Command-line options after parsing."""
 
     mode: str
-    verbose: bool = False
     apply: bool = False
     dry_run: bool = False
     yes: bool = False

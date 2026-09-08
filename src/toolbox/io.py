@@ -7,7 +7,6 @@ import shutil
 import sys
 from collections.abc import Iterator
 from datetime import datetime
-from functools import cache
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,7 +29,6 @@ def friendly_size(size: int) -> str:
     return f"{int(s)} {unit}"
 
 
-@cache
 def linecount(path: Path) -> int:
     """A quick way to count lines in a file. Defaults to 0 if file not found."""
     if not path.is_file():
@@ -40,10 +38,9 @@ def linecount(path: Path) -> int:
 
 
 def batched(iterable, n):
-    "Batch iterable into lists of length n. The last batch may be shorter."
+    """Batch iterable into lists of length n. The last batch may be shorter."""
     if n < 1:
-        yield []
-        return
+        raise ValueError("n must be at least one")
     it = iter(iterable)
     while batch := list(islice(it, n)):
         yield batch
@@ -98,6 +95,6 @@ def confirm(context: "Context", prompt: str, token: str) -> bool:
 def log(context: "Context", text: str | None = None) -> None:
     """Write text to log file. Defaults to just logging the current command."""
     now = datetime.now().isoformat(sep=" ")
-    txt = text if text else " ".join(sys.argv)
+    txt = text if text is not None else " ".join(sys.argv)
     with context.path.log.open("a") as log:
         log.write(f"{now} {txt}\n")

@@ -54,9 +54,9 @@ def test_mode_download_files_happy_path_calls_pipeline(ctx, monkeypatch):
     assert calls == ["log", "export", "api", "files_from_posts", "download_files", "summarize"]
 
 
-def test_mode_download_links_overrides_config_and_runs(ctx, monkeypatch):
-    """The `mode_download_links` function should force link-only semantics
-    (no thumbs, skip_days=0) and run the export/api/files/summarize pipeline.
+def test_mode_download_links_uses_link_only_discovery_without_mutating_config(ctx, monkeypatch):
+    """The `mode_download_links` function should request link-only discovery
+    semantics without changing the shared configuration.
     """
 
     class FakeApi:
@@ -64,26 +64,40 @@ def test_mode_download_links_overrides_config_and_runs(ctx, monkeypatch):
             return True
 
     ctx.api_client = FakeApi()
-    ctx.config.old_url_thumb = "https://old.example.com/thumb/"
-    ctx.config.skip_days = 99
+    old_url_thumb = ctx.config.old_url_thumb
+    skip_days = ctx.config.skip_days
     called = []
 
-    monkeypatch.setattr(commands, "log", lambda args: called.append("log"))
-    monkeypatch.setattr(commands, "posts_from_export", lambda args: called.append("export") or {})
-    monkeypatch.setattr(
-        commands, "posts_from_api", lambda args, posts: called.append("api") or posts
-    )
-    monkeypatch.setattr(
-        commands,
-        "files_from_posts",
-        lambda args, posts: called.append("files_from_posts") or {},
-    )
-    monkeypatch.setattr(commands, "summarize", lambda args, files: called.append("summarize"))
+    monkeypatch.setattr(commands, "log", lambda context: called.append("log"))
+
+    def fake_export(context, *, include_thumbnails=True):
+        called.append(("export", include_thumbnails))
+        return {}
+
+    def fake_api(context, posts, *, include_thumbnails=True):
+        called.append(("api", include_thumbnails))
+        return posts
+
+    def fake_files(context, posts, *, include_thumbnails=True, skip_days=None):
+        called.append(("files_from_posts", include_thumbnails, skip_days))
+        return {}
+
+    monkeypatch.setattr(commands, "posts_from_export", fake_export)
+    monkeypatch.setattr(commands, "posts_from_api", fake_api)
+    monkeypatch.setattr(commands, "files_from_posts", fake_files)
+    monkeypatch.setattr(commands, "summarize", lambda context, files: called.append("summarize"))
+
     commands.mode_download_links(ctx)
 
-    assert ctx.config.old_url_thumb is None
-    assert ctx.config.skip_days == 0
-    assert called == ["log", "export", "api", "files_from_posts", "summarize"]
+    assert ctx.config.old_url_thumb == old_url_thumb
+    assert ctx.config.skip_days == skip_days
+    assert called == [
+        "log",
+        ("export", False),
+        ("api", False),
+        ("files_from_posts", False, 0),
+        "summarize",
+    ]
 
 
 def test_mode_update_posts_and_delete_files_auth_gate(ctx, capsys):
@@ -113,8 +127,7 @@ def test_mode_update_posts_and_delete_files_auth_gate(ctx, capsys):
 
 def test_mode_update_legacy_links_calls_expected(ctx, monkeypatch):
     """The `mode_update_legacy_links` function should run the legacy-link update
-    pipeline (export->files_from_export->summarize->update_posts) with legacy=True
-    and reset skip_days to 0.
+    pipeline with legacy semantics without changing shared configuration.
     """
 
     class GoodApi:
@@ -122,33 +135,35 @@ def test_mode_update_legacy_links_calls_expected(ctx, monkeypatch):
             return True
 
     ctx.api_client = GoodApi()
-
-    ctx.config.skip_days = 5
+    skip_days = ctx.config.skip_days
+    old_url_thumb = ctx.config.old_url_thumb
     calls = []
 
     monkeypatch.setattr(
         commands,
         "posts_from_export",
-        lambda args, legacy=False: calls.append(("export", legacy)) or {},
+        lambda context, legacy=False: calls.append(("export", legacy)) or {},
     )
     monkeypatch.setattr(
         commands,
         "files_from_export",
-        lambda args, posts: calls.append("files_from_export") or {},
+        lambda context, posts: calls.append("files_from_export") or {},
     )
     monkeypatch.setattr(
         commands,
         "summarize",
-        lambda args, files, legacy=False: calls.append(("summarize", legacy)),
+        lambda context, files, legacy=False: calls.append(("summarize", legacy)),
     )
     monkeypatch.setattr(
         commands,
         "update_posts",
-        lambda args, legacy=False: calls.append(("update_posts", legacy)),
+        lambda context, legacy=False: calls.append(("update_posts", legacy)),
     )
+
     commands.mode_update_legacy_links(ctx)
 
-    assert ctx.config.skip_days == 0
+    assert ctx.config.skip_days == skip_days
+    assert ctx.config.old_url_thumb == old_url_thumb
     assert calls == [
         ("export", True),
         "files_from_export",
